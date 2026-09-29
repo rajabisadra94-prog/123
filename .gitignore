@@ -3,3 +3,7 @@ dist/
 .env
 *.log
 uploads/
+.pgdata/
+.pgready
+backend/.pgdata/
+backend/.pgready
