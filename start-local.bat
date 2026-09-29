@@ -20,11 +20,13 @@ pushd frontend
 call npm install || (echo نصب فرانت ناموفق بود & pause & exit /b 1)
 popd
 
+if exist backend\.pgready del backend\.pgready
 start "دیتابیس" cmd /k "cd /d %~dp0backend && node scripts\embedded-db.mjs"
 echo منتظر آماده شدن دیتابیس (بار اول ریختن دیتای نمونه چند دقیقه طول می‌کشد)...
 node backend\scripts\wait-db.js || (pause & exit /b 1)
 
 pushd backend
+call npx prisma db execute --file prisma\migrations\20260929000000_forwarding_process\migration.sql --schema prisma\schema.prisma
 node scripts\local-reset-admin.js
 popd
 

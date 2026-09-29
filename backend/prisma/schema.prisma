@@ -1021,6 +1021,21 @@ model ForwardingCargo {
   quoteConfirmedAt DateTime? // با تأیید، درآمد فورواردینگ در حسابداری ثبت می‌شود
   // چرخهٔ عمر (تصمیم #۱۰): AWAITING_CHINA | RECEIVED_CHINA | IN_TRANSIT | ARRIVED | DELIVERED
   stage            String        @default("AWAITING_CHINA")
+  // ─── ثبت سفارش حمل بار: هدف مشتری ───
+  targetAmount        Decimal? // هدف قیمت (کرایهٔ مورد نظر مشتری)
+  targetCurrency      Currency?
+  desiredArrivalDate  DateTime? // زمان مورد نظر مشتری برای رسیدن
+  // ─── نحوهٔ رسیدن بار به انبار چین: CUSTOMER_SENDS (مشتری خودش می‌فرستد) | WE_ARRANGE (با آدرس مشتری ما هماهنگ می‌کنیم) ───
+  inboundMode         String?
+  pickupAddress       String?
+  // ─── انبار چین: ارسال اطلاعات مشتری و تأییدیه ───
+  warehouseInfoSentAt DateTime?
+  warehouseConfirmedAt DateTime?
+  // ─── پرداخت‌ها: پیش‌پرداخت (حتی پیش از رسیدن کل بار) و تکمیل وجه (پیش از تحویل) ───
+  prepaymentAmount    Decimal?
+  prepaymentCurrency  Currency?
+  prepaymentReceivedAt DateTime?
+  fullPaymentReceivedAt DateTime?
   shipmentId       String?
   shipment         MainShipment? @relation(fields: [shipmentId], references: [id])
   notes            String?

@@ -5,8 +5,8 @@ import { upload } from '../../shared/middleware/upload';
 import { AppError } from '../../shared/middleware/errorHandler';
 import { projectAccessWhere } from '../../shared/utils/projectAccess';
 import { generateFileName } from '../../shared/utils/fileNaming';
-import { getOrCreateWallet, getOrCreateControl, postJournal, rateFor } from '../accounting/accounting.service';
-import { dwForwardingIncome, pwForwardingIncome, writeLegacy } from '../ledger/dual-write';
+import { getOrCreateWallet, getOrCreateControl, postJournal, postSettlement, rateFor } from '../accounting/accounting.service';
+import { dwForwardingIncome, pwForwardingIncome, writeLegacy, ledgerMode, pwSettlement, dwSettlement } from '../ledger/dual-write';
 import { Currency } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
@@ -14,7 +14,9 @@ import fs from 'fs';
 const router = Router();
 router.use(authenticate);
 
-export const CARGO_STAGES = ['AWAITING_CHINA', 'RECEIVED_CHINA', 'IN_TRANSIT', 'ARRIVED', 'DELIVERED'] as const;
+// مراحل بار: در انتظار انبار چین ← تأییدیهٔ انبار چین ← رسید به انبار چین ← حمل به ایران ← رسید به ایران ← تحویل مشتری
+export const CARGO_STAGES = ['AWAITING_CHINA', 'WAREHOUSE_CONFIRMED', 'RECEIVED_CHINA', 'IN_TRANSIT', 'ARRIVED', 'DELIVERED'] as const;
+const INBOUND_MODES = ['CUSTOMER_SENDS', 'WE_ARRANGE'];
 
 // محاسبهٔ کرایه بر اساس روش (نرخ×وزن / نرخ×حجم / مقطوع)
 function computeQuote(c: { freightMode?: string | null; freightRate?: any; flatAmount?: any; weightKg?: any; volumeCbm?: any }): number | null {
@@ -119,6 +121,7 @@ router.patch('/:id/stage', async (req: Request, res: Response) => {
   if (!CARGO_STAGES.includes(stage)) throw new AppError(400, 'مرحلهٔ نامعتبر');
   const cargo = await prisma.forwardingCargo.findUnique({ where: { id: req.params.id } });
   if (!cargo) throw new AppError(404, 'بار یافت نشد');
+  assertStageGate(cargo, stage);
   await prisma.forwardingCargo.update({ where: { id: cargo.id }, data: { stage } });
 
   // تحویل نهایی بار به مشتری → پروژهٔ فورواردینگ تکمیل می‌شود (هم‌راستا با «تحویل مشتری» در ماژول حمل)
@@ -136,6 +139,101 @@ router.patch('/:id/stage', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// شرط‌های عبور از هر مرحله (ترتیب فرایند حمل بار)
+function assertStageGate(cargo: any, stage: string) {
+  if (stage === 'WAREHOUSE_CONFIRMED' && !cargo.warehouseInfoSentAt) throw new AppError(400, 'ابتدا اطلاعات مشتری را برای انبار چین ارسال کنید');
+  if (stage === 'RECEIVED_CHINA' && !cargo.warehouseConfirmedAt) throw new AppError(400, 'ابتدا تأییدیهٔ انبار چین را ثبت کنید');
+  if (stage === 'IN_TRANSIT' && !cargo.prepaymentReceivedAt) throw new AppError(400, 'پیش از حمل به ایران، پیش‌پرداخت مشتری باید ثبت شود');
+  if (stage === 'DELIVERED' && !cargo.fullPaymentReceivedAt) throw new AppError(400, 'پیش از تحویل به مشتری، تکمیل وجه باید ثبت شود');
+}
+
+// ارسال اطلاعات مشتری به انبار چین
+router.post('/:id/send-warehouse-info', async (req: Request, res: Response) => {
+  const cargo = await prisma.forwardingCargo.findUnique({ where: { id: req.params.id } });
+  if (!cargo) throw new AppError(404, 'بار یافت نشد');
+  if (!cargo.inboundMode) throw new AppError(400, 'ابتدا نحوهٔ رسیدن بار به انبار چین را مشخص کنید');
+  if (cargo.inboundMode === 'WE_ARRANGE' && !cargo.pickupAddress) throw new AppError(400, 'برای هماهنگی توسط ما، آدرس تحویل بار لازم است');
+  await prisma.forwardingCargo.update({ where: { id: cargo.id }, data: { warehouseInfoSentAt: new Date() } });
+  await prisma.auditLog.create({ data: { userId: req.user!.id, action: 'UPDATE', entity: 'ForwardingCargo', entityId: cargo.id, projectId: cargo.projectId, changes: { event: 'WAREHOUSE_INFO_SENT' } } });
+  res.json({ ok: true });
+});
+
+// ثبت تأییدیهٔ انبار چین
+router.post('/:id/warehouse-confirm', async (req: Request, res: Response) => {
+  const cargo = await prisma.forwardingCargo.findUnique({ where: { id: req.params.id } });
+  if (!cargo) throw new AppError(404, 'بار یافت نشد');
+  assertStageGate(cargo, 'WAREHOUSE_CONFIRMED');
+  await prisma.forwardingCargo.update({
+    where: { id: cargo.id },
+    data: { warehouseConfirmedAt: new Date(), stage: cargo.stage === 'AWAITING_CHINA' ? 'WAREHOUSE_CONFIRMED' : cargo.stage },
+  });
+  await prisma.auditLog.create({ data: { userId: req.user!.id, action: 'UPDATE', entity: 'ForwardingCargo', entityId: cargo.id, projectId: cargo.projectId, changes: { event: 'WAREHOUSE_CONFIRMED' } } });
+  res.json({ ok: true });
+});
+
+// دریافت پول از مشتری: PREPAYMENT (پیش‌پرداخت — بعد از تأییدیهٔ انبار چین، حتی پیش از رسیدن کل بار) | FULL (تکمیل وجه — پس از رسیدن به ایران)
+router.post('/:id/payment', async (req: Request, res: Response) => {
+  const { kind, amount, currency, fromAccountId } = req.body;
+  if (!['PREPAYMENT', 'FULL'].includes(kind)) throw new AppError(400, 'نوع پرداخت نامعتبر است');
+  if (!amount || Number(amount) <= 0) throw new AppError(400, 'مبلغ دریافتی لازم است');
+  if (!currency) throw new AppError(400, 'ارز دریافتی لازم است');
+  if (!fromAccountId) throw new AppError(400, 'حساب دریافت‌کنندهٔ شرکت لازم است');
+
+  const cargo = await prisma.forwardingCargo.findUnique({ where: { id: req.params.id }, include: { project: { include: { customer: { select: { id: true, name: true } } } } } });
+  if (!cargo) throw new AppError(404, 'بار یافت نشد');
+  if (kind === 'PREPAYMENT' && !cargo.warehouseConfirmedAt) throw new AppError(400, 'پیش‌پرداخت پس از تأییدیهٔ انبار چین ثبت می‌شود');
+  if (kind === 'PREPAYMENT' && cargo.prepaymentReceivedAt) throw new AppError(400, 'پیش‌پرداخت قبلاً ثبت شده است');
+  if (kind === 'FULL' && cargo.stage !== 'ARRIVED') throw new AppError(400, 'تکمیل وجه پس از رسیدن بار به ایران ثبت می‌شود');
+  if (kind === 'FULL' && cargo.fullPaymentReceivedAt) throw new AppError(400, 'تکمیل وجه قبلاً ثبت شده است');
+
+  const from = await prisma.financialAccount.findUnique({ where: { id: fromAccountId } });
+  if (!from) throw new AppError(404, 'حساب دریافت‌کننده یافت نشد');
+  const sameCurrency = from.currency === currency;
+  if (ledgerMode() === 'new' && !sameCurrency) {
+    throw new AppError(400, 'هستهٔ جدید تسویهٔ چندارزی نمی‌پذیرد — ارز دریافتی باید با ارز حساب یکی باشد');
+  }
+
+  const date = new Date();
+  const label = kind === 'PREPAYMENT' ? 'پیش‌پرداخت' : 'تکمیل وجه';
+  let legacyEntryId: string | undefined;
+  await prisma.$transaction(async (tx) => {
+    if (writeLegacy()) {
+      const payRate = await rateFor(currency as Currency);
+      const fromRate = await rateFor(from.currency);
+      const cashAmount = sameCurrency ? Number(amount) : (Number(amount) * payRate) / fromRate;
+      const entry = await postSettlement(tx, {
+        direction: 'RECEIPT', ownerType: 'CUSTOMER', ownerId: cargo.project.customerId, ownerName: cargo.project.customer.name,
+        obligationCurrency: currency as Currency, settledAmount: Number(amount), companyAccountId: from.id, cashAmount,
+        description: `${label} حمل بار — پروژهٔ ${cargo.project.code}`,
+        eventType: 'FORWARDING_PAYMENT', sourceType: 'ForwardingCargo', sourceId: cargo.id,
+        projectId: cargo.projectId, createdById: req.user!.id, date,
+      });
+      legacyEntryId = (entry as any)?.id;
+    }
+    if (sameCurrency) {
+      await pwSettlement(tx, {
+        direction: 'RECEIPT', ownerType: 'CUSTOMER', ownerId: cargo.project.customerId,
+        currency, amount: Number(amount), companyAccountName: from.name, date, userId: req.user!.id,
+      });
+    }
+    await tx.forwardingCargo.update({
+      where: { id: cargo.id },
+      data: kind === 'PREPAYMENT'
+        ? { prepaymentAmount: Number(amount), prepaymentCurrency: currency, prepaymentReceivedAt: date }
+        : { fullPaymentReceivedAt: date },
+    });
+  }, { timeout: 20000 });
+
+  if (legacyEntryId && sameCurrency) {
+    await dwSettlement({
+      legacyEntryId, direction: 'RECEIPT', ownerType: 'CUSTOMER', ownerId: cargo.project.customerId,
+      currency, amount: Number(amount), legacyCashAccountName: from.name, date, userId: req.user!.id,
+    });
+  }
+  await prisma.auditLog.create({ data: { userId: req.user!.id, action: 'UPDATE', entity: 'ForwardingCargo', entityId: cargo.id, projectId: cargo.projectId, changes: { event: kind === 'PREPAYMENT' ? 'FORWARDING_PREPAYMENT' : 'FORWARDING_FULL_PAYMENT', amount, currency } } });
+  res.json({ ok: true });
+});
+
 // اتصال بار به یک محمولهٔ اصلی موجود (کانتینر مشترک) → وارد زنجیرهٔ حمل
 router.post('/:id/attach-shipment', async (req: Request, res: Response) => {
   const { shipmentId } = req.body;
@@ -144,6 +242,7 @@ router.post('/:id/attach-shipment', async (req: Request, res: Response) => {
   if (!cargo) throw new AppError(404, 'بار یافت نشد');
   const shipment = await prisma.mainShipment.findUnique({ where: { id: shipmentId }, select: { id: true, code: true } });
   if (!shipment) throw new AppError(404, 'محموله یافت نشد');
+  assertStageGate(cargo, 'IN_TRANSIT');
   await prisma.forwardingCargo.update({ where: { id: cargo.id }, data: { shipmentId, stage: 'IN_TRANSIT' } });
   await prisma.auditLog.create({ data: { userId: req.user!.id, action: 'UPDATE', entity: 'ForwardingCargo', entityId: cargo.id, projectId: cargo.projectId, changes: { event: 'CARGO_ATTACHED', shipmentCode: shipment.code } } });
   res.json({ ok: true });
@@ -173,6 +272,14 @@ function pickCargoFields(b: any) {
   for (const f of strFields) if (b[f] !== undefined) out[f] = b[f] || null;
   if (b.packagesCount !== undefined) out.packagesCount = b.packagesCount === '' ? null : Number(b.packagesCount);
   if (b.declaredCurrency !== undefined) out.declaredCurrency = b.declaredCurrency || null;
+  if (b.targetAmount !== undefined) out.targetAmount = b.targetAmount === '' || b.targetAmount === null ? null : Number(b.targetAmount);
+  if (b.targetCurrency !== undefined) out.targetCurrency = b.targetCurrency || null;
+  if (b.desiredArrivalDate !== undefined) out.desiredArrivalDate = b.desiredArrivalDate ? new Date(b.desiredArrivalDate) : null;
+  if (b.inboundMode !== undefined) {
+    if (b.inboundMode && !INBOUND_MODES.includes(b.inboundMode)) throw new AppError(400, 'نحوهٔ رسیدن بار به انبار چین نامعتبر است');
+    out.inboundMode = b.inboundMode || null;
+  }
+  if (b.pickupAddress !== undefined) out.pickupAddress = b.pickupAddress || null;
   if (b.quoteCurrency !== undefined && b.quoteCurrency) out.quoteCurrency = b.quoteCurrency;
   return out;
 }

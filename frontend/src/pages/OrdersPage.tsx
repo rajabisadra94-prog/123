@@ -27,6 +27,7 @@ const PURCHASE_COLUMNS = [
 // مراحل بار فورواردینگ (فاز ۶)
 const CARGO_COLUMNS = [
   { key: 'AWAITING_CHINA', label: 'در انتظار انبار چین', color: '#3b82f6' },
+  { key: 'WAREHOUSE_CONFIRMED', label: 'تأییدیهٔ انبار چین', color: '#0ea5e9' },
   { key: 'RECEIVED_CHINA', label: 'رسید به انبار چین', color: '#06b6d4' },
   { key: 'IN_TRANSIT', label: 'در حال حمل', color: '#8b5cf6' },
   { key: 'ARRIVED', label: 'رسید به مقصد', color: '#ec4899' },
@@ -35,6 +36,7 @@ const CARGO_COLUMNS = [
 const ROUTE_LABELS: Record<string, string> = { AIR: 'هوایی', SEA: 'دریایی', LAND: 'زمینی', RAIL: 'ریلی' }
 const TRANSIT_LABELS: Record<string, string> = { DIRECT: 'مستقیم ایران', VIA_DUBAI: 'ترانزیت دبی' }
 const FMODE_LABELS: Record<string, string> = { BY_WEIGHT: 'نرخ × وزن', BY_VOLUME: 'نرخ × حجم', FLAT: 'مقطوع' }
+const INBOUND_LABELS: Record<string, string> = { CUSTOMER_SENDS: 'مشتری خودش بار را به انبار چین می‌فرستد', WE_ARRANGE: 'آدرس می‌دهد و ما ارسال به انبار چین را هماهنگ می‌کنیم' }
 const FILE_HOST = API_ORIGIN
 
 export default function OrdersPage() {
@@ -588,6 +590,8 @@ function CargoModal({ id, onClose }: { id: string; onClose: () => void }) {
       senderName: cargo.senderName ?? '', senderContact: cargo.senderContact ?? '', goodsDescription: cargo.goodsDescription ?? '',
       declaredValue: cargo.declaredValue ?? '', declaredCurrency: cargo.declaredCurrency ?? 'USD', route: cargo.route ?? '', transit: cargo.transit ?? '',
       freightMode: cargo.freightMode ?? '', freightRate: cargo.freightRate ?? '', flatAmount: cargo.flatAmount ?? '', quoteCurrency: cargo.quoteCurrency ?? 'USD', notes: cargo.notes ?? '',
+      targetAmount: cargo.targetAmount ?? '', targetCurrency: cargo.targetCurrency ?? 'USD', desiredArrivalDate: cargo.desiredArrivalDate ? String(cargo.desiredArrivalDate).slice(0, 10) : '',
+      inboundMode: cargo.inboundMode ?? '', pickupAddress: cargo.pickupAddress ?? '',
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cargo?.id, cargo?.updatedAt])
@@ -595,6 +599,20 @@ function CargoModal({ id, onClose }: { id: string; onClose: () => void }) {
   const save = useMutation({ mutationFn: () => api.patch(`/forwarding/${id}`, f), onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا') })
   const confirmQuote = useMutation({ mutationFn: () => api.post(`/forwarding/${id}/confirm-quote`), onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا') })
   const advanceStage = useMutation({ mutationFn: (stage: string) => api.patch(`/forwarding/${id}/stage`, { stage }), onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا') })
+  const sendInfo = useMutation({ mutationFn: async () => { await api.patch(`/forwarding/${id}`, f); await api.post(`/forwarding/${id}/send-warehouse-info`) }, onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا') })
+  const warehouseConfirm = useMutation({ mutationFn: () => api.post(`/forwarding/${id}/warehouse-confirm`), onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا') })
+  const uploadPhoto = useMutation({
+    mutationFn: async (file: File) => { const fd = new FormData(); fd.append('files', file); fd.append('fileType', 'GOODS_PHOTO'); await api.post(`/forwarding/${id}/files`, fd) },
+    onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا در بارگذاری عکس'),
+  })
+  const { data: accounts = [] } = useQuery({ queryKey: ['company-accounts'], queryFn: () => api.get('/accounting/accounts').then((r) => r.data) })
+  const [payAmount, setPayAmount] = useState('')
+  const [payCurrency, setPayCurrency] = useState('USD')
+  const [payAccount, setPayAccount] = useState('')
+  const pay = useMutation({
+    mutationFn: (kind: string) => api.post(`/forwarding/${id}/payment`, { kind, amount: Number(payAmount), currency: payCurrency, fromAccountId: payAccount }),
+    onSuccess: () => { setPayAmount(''); refresh() }, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا'),
+  })
   const attach = useMutation({ mutationFn: () => api.post(`/forwarding/${id}/attach-shipment`, { shipmentId: attachShip }), onSuccess: refresh, onError: (e: any) => toast.error(e.response?.data?.message || 'خطا') })
 
   if (!cargo) return <ModalLoading />
@@ -622,6 +640,21 @@ function CargoModal({ id, onClose }: { id: string; onClose: () => void }) {
 
           {f && (
           <>
+          <h3 style={{ fontSize: 13, marginBottom: 6 }}>ثبت سفارش و هدف مشتری</h3>
+          <div className="grid-2" style={{ gap: 8 }}>
+            <div className="form-group"><label>هدف قیمت مشتری (کرایه)</label><div style={{ display: 'flex', gap: 6 }}><input type="number" style={{ flex: 1 }} value={c.targetAmount} onChange={(e) => set('targetAmount', e.target.value)} /><select style={{ width: 80 }} value={c.targetCurrency} onChange={(e) => set('targetCurrency', e.target.value)}><option value="USD">دلار</option><option value="CNY">یوآن</option><option value="IRR">تومان</option></select></div></div>
+            <div className="form-group"><label>زمان مورد نظر مشتری برای رسیدن</label><DateField value={c.desiredArrivalDate} onChange={(v) => set('desiredArrivalDate', v)} /></div>
+          </div>
+          <div className="form-group">
+            <label>عکس محصول</label>
+            <input type="file" accept=".png,.jpg,.jpeg,.webp" disabled={uploadPhoto.isPending} onChange={(e) => { const file = e.target.files?.[0]; if (file) uploadPhoto.mutate(file); e.target.value = '' }} />
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+              {(cargo.files || []).filter((x: any) => x.fileType === 'GOODS_PHOTO').map((x: any) => (
+                <a key={x.id} href={`${FILE_HOST}${x.url}`} target="_blank" rel="noreferrer"><img src={`${FILE_HOST}${x.url}`} alt="عکس محصول" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} /></a>
+              ))}
+            </div>
+          </div>
+
           <h3 style={{ fontSize: 13, marginBottom: 6 }}>مشخصات بار</h3>
           <div className="grid-2" style={{ gap: 8 }}>
             <div className="form-group"><label>وزن (kg)</label><input type="number" value={c.weightKg} onChange={(e) => set('weightKg', e.target.value)} /></div>
@@ -647,6 +680,49 @@ function CargoModal({ id, onClose }: { id: string; onClose: () => void }) {
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <button className="btn-secondary btn-sm" disabled={save.isPending} onClick={() => save.mutate()}>💾 ذخیره مشخصات</button>
             {!confirmed && <button className="btn-primary btn-sm" disabled={confirmQuote.isPending} onClick={async () => { if (await dialog.confirm({ title: 'کرایه تأیید و ثبت شود؟', message: 'به‌عنوان درآمد فورواردینگ در حسابداری ثبت می‌شود و به‌صورت طلب از مشتری منظور می‌گردد.', confirmLabel: 'تأیید و ثبت' })) confirmQuote.mutate() }}>✅ تأیید و ثبت کرایه (درآمد)</button>}
+          </div>
+
+          {/* انبار چین */}
+          <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            <h3 style={{ fontSize: 13, marginBottom: 6 }}>انبار چین</h3>
+            <div className="form-group">
+              <label>نحوهٔ رسیدن بار به انبار چین</label>
+              <select value={c.inboundMode} disabled={!!cargo.warehouseInfoSentAt} onChange={(e) => set('inboundMode', e.target.value)}>
+                <option value="">—</option>
+                {Object.entries(INBOUND_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            {c.inboundMode === 'WE_ARRANGE' && <div className="form-group"><label>آدرس تحویل بار در چین</label><textarea rows={2} disabled={!!cargo.warehouseInfoSentAt} value={c.pickupAddress} onChange={(e) => set('pickupAddress', e.target.value)} /></div>}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {cargo.warehouseInfoSentAt
+                ? <span style={{ fontSize: 13, color: 'var(--success)' }}>✅ اطلاعات مشتری برای انبار چین ارسال شد ({toShamsi(cargo.warehouseInfoSentAt)})</span>
+                : <button className="btn-secondary btn-sm" disabled={!c.inboundMode || sendInfo.isPending} onClick={() => sendInfo.mutate()}>📨 ارسال اطلاعات مشتری به انبار چین</button>}
+              {cargo.warehouseInfoSentAt && (cargo.warehouseConfirmedAt
+                ? <span style={{ fontSize: 13, color: 'var(--success)' }}>✅ تأییدیهٔ انبار چین ثبت شد ({toShamsi(cargo.warehouseConfirmedAt)})</span>
+                : <button className="btn-primary btn-sm" disabled={warehouseConfirm.isPending} onClick={() => warehouseConfirm.mutate()}>✅ ثبت تأییدیهٔ انبار چین</button>)}
+            </div>
+          </div>
+
+          {/* پرداخت‌های مشتری */}
+          <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            <h3 style={{ fontSize: 13, marginBottom: 6 }}>پرداخت‌های مشتری</h3>
+            <p style={{ fontSize: 13 }}>
+              پیش‌پرداخت: {cargo.prepaymentReceivedAt ? <span style={{ color: 'var(--success)' }}>✅ {Number(cargo.prepaymentAmount).toLocaleString()} {cargo.prepaymentCurrency} ({toShamsi(cargo.prepaymentReceivedAt)})</span> : <span className="hint">هنوز دریافت نشده</span>}
+              {' • '}تکمیل وجه: {cargo.fullPaymentReceivedAt ? <span style={{ color: 'var(--success)' }}>✅ ثبت شد ({toShamsi(cargo.fullPaymentReceivedAt)})</span> : <span className="hint">هنوز دریافت نشده</span>}
+            </p>
+            {(!cargo.prepaymentReceivedAt || (!cargo.fullPaymentReceivedAt && cargo.stage === 'ARRIVED')) && (
+              <>
+                <div className="grid-2" style={{ gap: 8 }}>
+                  <div className="form-group"><label>مبلغ دریافتی</label><div style={{ display: 'flex', gap: 6 }}><input type="number" style={{ flex: 1 }} value={payAmount} onChange={(e) => setPayAmount(e.target.value)} /><select style={{ width: 80 }} value={payCurrency} onChange={(e) => setPayCurrency(e.target.value)}><option value="USD">دلار</option><option value="CNY">یوآن</option><option value="IRR">تومان</option></select></div></div>
+                  <div className="form-group"><label>حساب دریافت‌کنندهٔ شرکت</label><SearchableSelect value={payAccount} onChange={setPayAccount} placeholder="انتخاب حساب..." options={accounts.map((a: any) => ({ value: a.id, label: a.name }))} /></div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {!cargo.prepaymentReceivedAt && <button className="btn-secondary btn-sm" disabled={!payAmount || !payAccount || pay.isPending || !cargo.warehouseConfirmedAt} title={!cargo.warehouseConfirmedAt ? 'پس از تأییدیهٔ انبار چین' : undefined} onClick={() => pay.mutate('PREPAYMENT')}>💰 ثبت پیش‌پرداخت</button>}
+                  {!cargo.fullPaymentReceivedAt && cargo.stage === 'ARRIVED' && <button className="btn-primary btn-sm" disabled={!payAmount || !payAccount || pay.isPending} onClick={() => pay.mutate('FULL')}>💰 ثبت تکمیل وجه</button>}
+                </div>
+              </>
+            )}
+            <p className="hint-sm" style={{ marginTop: 4 }}>پیش‌پرداخت پس از تأییدیهٔ انبار چین و حتی پیش از رسیدن کل بار قابل ثبت است و برای حمل به ایران لازم است. تکمیل وجه پس از رسیدن به ایران و پیش از تحویل به مشتری ثبت می‌شود.</p>
           </div>
 
           {/* اتصال به محموله */}
