@@ -1,0 +1,2724 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  MANAGER
+  PROJECT_MANAGER
+  ACCOUNTANT
+  ENGINEER
+  VIEWER
+}
+
+enum Currency {
+  IRR
+  USD
+  CNY
+}
+
+/// طبقه‌بندی پایهٔ حساب — معادلهٔ حسابداری: دارایی = بدهی + سرمایه + (درآمد − هزینه)
+/// ماهیت مانده: ASSET/EXPENSE بدهکار، LIABILITY/EQUITY/INCOME بستانکار
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum TechnicalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PartMilestone {
+  CREATED
+  PRICED_AND_INVOICED
+  ORDER_PLACED
+  IN_PRODUCTION
+  QUALITY_CONTROL
+  COMPLETED
+  IN_TRANSIT
+  DELIVERED
+  ARCHIVED
+}
+
+enum PricingRequestStatus {
+  IN_PROGRESS
+  COMPLETED
+  ARCHIVED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+enum ProductionOrderStatus {
+  NEW
+  IN_PRODUCTION
+  QUALITY_CONTROL
+  COMPLETED
+}
+
+enum ShipmentType {
+  AIR
+  SEA
+  LAND
+  RAIL
+}
+
+enum DomesticPackageStatus {
+  IN_TRANSIT
+  DELIVERED_TO_FORWARDER
+}
+
+enum MainShipmentStatus {
+  IN_TRANSIT
+  ARRIVED
+  DELIVERED_TO_US
+}
+
+enum TransactionType {
+  RECEIVE_FROM_CUSTOMER
+  PAY_TO_PRODUCER
+  PAY_TO_CARRIER
+  PAY_COMMISSION
+  OTHER_INCOME
+  OTHER_EXPENSE
+  INTERNAL_TRANSFER
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  ARCHIVE
+  RESTORE
+}
+
+enum TaskRepeat {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum ArchiveReason {
+  PROJECT_COMPLETED
+  PRICE_REJECTED_BY_CUSTOMER
+  TECHNICAL_ISSUES
+  CUSTOMER_CANCELLED
+  OTHER
+}
+
+// ─────────────────────────────────────────────
+// MONEY — ذخیره هر مبلغ به صورت آبجکت
+// ─────────────────────────────────────────────
+
+// در Prisma از composite type یا JSON استفاده می‌کنیم
+// MoneyField = { amount: Decimal, currency: Currency, rateToIRR: Decimal, rateAt: DateTime }
+// به صورت 4 ستون جداگانه در هر جدول
+
+// ─────────────────────────────────────────────
+// SETTINGS — موجودیت‌های پایه
+// ─────────────────────────────────────────────
+
+model User {
+  id                String   @id @default(cuid())
+  name              String
+  // نام کاربری ورود — هر چیزی می‌تواند باشد (ایمیل، شمارهٔ تماس، نام لاتین، …)
+  // همیشه با حروف کوچک و بدون فاصلهٔ ابتدا/انتها ذخیره می‌شود تا ورود حساس به بزرگ/کوچکی نباشد.
+  username          String   @unique
+  // ایمیل دیگر اجباری نیست؛ اگر پر باشد یکتاست و می‌شود با آن هم وارد شد
+  email             String?  @unique
+  phone             String?
+  passwordHash      String
+  role              UserRole @default(PROJECT_MANAGER)
+  isActive          Boolean  @default(true)
+  avatarUrl         String?
+  // دسترسی به پروژه‌ها: ALL=همه، NONE=هیچ‌کدام، SPECIFIC=فقط پروژه‌های تخصیص‌یافته در ProjectMember
+  projectAccessMode String   @default("ALL")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  auditLogs              AuditLog[]
+  assignedTasks          Task[]            @relation("AssignedTasks")
+  createdTasks           Task[]            @relation("CreatedTasks")
+  comments               Comment[]
+  notifications          Notification[]
+  technicalReviews       TechnicalReview[]
+  notes                  Note[]
+  sentMessages           Message[]         @relation("SentMessages")
+  receivedMessages       Message[]         @relation("ReceivedMessages")
+  projectMemberships     ProjectMember[]
+  deviceTokens           DeviceToken[]
+  assignedLeads          Lead[]            @relation("AssignedLeads")
+  assignedMarketContacts MarketContact[]   @relation("AssignedMarketContacts")
+  assignedMarketPromises MarketPromise[]   @relation("AssignedMarketPromises")
+}
+
+// توکن دستگاه برای اعلان Push (FCM). هر کاربر می‌تواند چند دستگاه داشته باشد.
+model DeviceToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String   @default("android")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────
+// COLLABORATION: NOTES & CHAT
+// ─────────────────────────────────────────────
+
+model Note {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  content    String
+  color      String   @default("#fff8c5")
+  isArchived Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Message {
+  id             String    @id @default(cuid())
+  fromUserId     String
+  fromUser       User      @relation("SentMessages", fields: [fromUserId], references: [id])
+  toUserId       String
+  toUser         User      @relation("ReceivedMessages", fields: [toUserId], references: [id])
+  text           String
+  attachmentUrl  String?
+  attachmentName String? // نام اصلی فایل، برای نمایش و دانلود درست
+  attachmentMime String? // برای تشخیص عکس و پیش‌نمایش درون‌خطی
+  attachmentSize Int?
+  isRead         Boolean   @default(false)
+  readAt         DateTime? // زمان خواندن — برای تیکِ «خوانده شد»
+  editedAt       DateTime? // ویرایش پیام
+  deletedAt      DateTime? // حذف نرم؛ متن پاک می‌شود ولی رشتهٔ گفتگو نمی‌شکند
+  createdAt      DateTime  @default(now())
+
+  // پاسخ به پیام (نقل‌قول)
+  replyToId String?
+  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies   Message[] @relation("MessageReplies")
+
+  // کلید متعارفِ مکالمه: دو شناسه مرتب‌شده و به‌هم‌چسبیده («کوچک‌تر:بزرگ‌تر»).
+  // بدون این، کوئری thread یک OR دوطرفه است و PostgreSQL نمی‌تواند مطمئن از
+  // ایندکس استفاده کند (به Seq Scan می‌افتد). با این کلید، همان کوئری یک
+  // تساویِ ساده می‌شود و همیشه ایندکس می‌خورد — مستقل از توزیع داده.
+  convKey String @default("")
+
+  @@index([convKey, createdAt])
+  @@index([fromUserId, toUserId, createdAt])
+  @@index([toUserId, fromUserId, createdAt])
+  // شمارش نخوانده‌ها (بج سایدبار و لیست مکالمات)
+  @@index([toUserId, isRead])
+}
+
+model Customer {
+  id             String   @id @default(cuid())
+  name           String
+  shortCode      String   @unique @db.VarChar(3)
+  projectCounter Int      @default(0)
+  address        String?
+  phone          String?
+  email          String?
+  notes          String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  projects          Project[]
+  financialAccounts FinancialAccount[]
+  leads             Lead[]
+  crmInteractions   CrmInteraction[]
+  marketContacts    MarketContact[]
+}
+
+// ─── CRM: سرنخ فروش (مشتری بالقوه تا شروع اولین پروژه) ───
+model Lead {
+  id                 String           @id @default(cuid())
+  name               String
+  company            String?
+  phone              String?
+  email              String?
+  source             String? // منبع آشنایی: معرفی/نمایشگاه/وب‌سایت/...
+  stage              String           @default("NEW") // NEW/CONTACTED/PROPOSAL/NEGOTIATION/WON/LOST
+  estimatedValue     Float? // ارزش تخمینی (تومان)
+  notes              String?
+  nextFollowUpAt     DateTime? // تاریخ پیگیری بعدی
+  followUpNotifiedAt DateTime? // آخرین باری که اعلان پیگیری فرستاده شد (برای جلوگیری از تکرار)
+  lostReason         String?
+  assignedToId       String?
+  assignedTo         User?            @relation("AssignedLeads", fields: [assignedToId], references: [id])
+  customerId         String? // پس از تبدیل (برد) به این مشتری وصل می‌شود
+  customer           Customer?        @relation(fields: [customerId], references: [id])
+  createdById        String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  interactions       CrmInteraction[]
+
+  @@index([stage])
+  @@index([assignedToId])
+}
+
+// ─── CRM: تعامل (تماس/جلسه/پیام) با سرنخ یا مشتری ───
+model CrmInteraction {
+  id          String    @id @default(cuid())
+  type        String // CALL/MEETING/MESSAGE/EMAIL/OTHER
+  note        String
+  outcome     String?
+  occurredAt  DateTime  @default(now())
+  leadId      String?
+  lead        Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  @@index([leadId])
+  @@index([customerId])
+}
+
+model ProducerCategory {
+  id        String               @id @default(cuid())
+  name      String               @unique
+  parentId  String?
+  parent    ProducerCategory?    @relation("SubCategories", fields: [parentId], references: [id])
+  children  ProducerCategory[]   @relation("SubCategories")
+  producers ProducerOnCategory[]
+  suppliers SupplierOnCategory[]
+}
+
+model Producer {
+  id          String  @id @default(cuid())
+  name        String
+  nameEn      String? // نام لاتین/چینی — برای مکاتبه و جستجو
+  contactName String?
+  address     String?
+  phone       String?
+  email       String?
+  notes       String?
+  isActive    Boolean @default(true)
+  isDomestic  Boolean @default(false) // سازندهٔ داخل ایران — بدون محمولهٔ بین‌المللی، مستقیم تحویل به ما
+
+  // هویت و موقعیت
+  country    String? // کشور (پیش‌فرض چین برای خارجی، ایران برای داخلی)
+  city       String?
+  website    String?
+  wechat     String?
+  whatsapp   String?
+  alibabaUrl String? // صفحهٔ علی‌بابا / 1688
+
+  // توانمندی
+  specialties  String[] @default([]) // تگ تخصص: CNC، ریخته‌گری، آبکاری…
+  materials    String[] @default([]) // مواد قابل‌کار
+  moq          String? // حداقل سفارش
+  capacity     String? // ظرفیت ماهانه
+  leadTimeDays Int? // زمان تحویل معمول (روز)
+
+  // ارزیابی — امتیاز ۱ تا ۵
+  ratingQuality  Int?
+  ratingPrice    Int?
+  ratingDelivery Int?
+  ratingComms    Int?
+  status         String   @default("ACTIVE") // ACTIVE=تأییدشده، TRIAL=آزمایشی، BLACKLIST=لیست سیاه
+  riskNote       String?
+  certifications String[] @default([]) // ISO9001…
+
+  // تجاری
+  paymentTerms String? // ۳۰٪ بیعانه، ۷۰٪ قبل ارسال…
+  currency     String? // ارز ترجیحی
+  incoterms    String? // FOB/EXW/CIF…
+  bankInfo     String?
+  logoUrl      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categories        ProducerOnCategory[]
+  pricingProducers  PricingProducer[]
+  productionOrders  ProductionOrder[]
+  financialAccounts FinancialAccount[]
+  contacts          VendorContact[]
+  documents         VendorDocument[]
+}
+
+model ProducerOnCategory {
+  producerId String
+  categoryId String
+  producer   Producer         @relation(fields: [producerId], references: [id])
+  category   ProducerCategory @relation(fields: [categoryId], references: [id])
+
+  @@id([producerId, categoryId])
+}
+
+// تامین‌کنندهٔ کالای آماده (خرید) — جدا از سازنده (Producer). معمولاً فروشگاه/پلتفرم چینی
+model Supplier {
+  id          String  @id @default(cuid())
+  name        String
+  nameEn      String?
+  contactName String?
+  wechat      String?
+  address     String?
+  phone       String?
+  email       String?
+  notes       String?
+  isActive    Boolean @default(true)
+
+  // هویت و موقعیت
+  country    String?
+  city       String?
+  website    String?
+  whatsapp   String?
+  alibabaUrl String?
+
+  // توانمندی — برای تامین‌کننده: دسته کالا و برندهایی که تأمین می‌کند
+  specialties  String[] @default([])
+  brands       String[] @default([])
+  moq          String?
+  leadTimeDays Int?
+
+  // ارزیابی
+  ratingQuality  Int?
+  ratingPrice    Int?
+  ratingDelivery Int?
+  ratingComms    Int?
+  status         String   @default("ACTIVE") // ACTIVE/TRIAL/BLACKLIST
+  riskNote       String?
+  certifications String[] @default([])
+
+  // تجاری
+  paymentTerms String?
+  currency     String?
+  incoterms    String?
+  bankInfo     String?
+  logoUrl      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  financialAccounts FinancialAccount[]
+  pricingProducers  PricingProducer[]
+  productionOrders  ProductionOrder[]
+  categories        SupplierOnCategory[]
+  contacts          VendorContact[]
+  documents         VendorDocument[]
+}
+
+// ─── بانک طرف‌های تأمین: مخاطبان و اسناد (مشترک بین سازنده و تامین‌کننده) ───
+model VendorContact {
+  id         String    @id @default(cuid())
+  name       String
+  role       String? // سِمت: مدیر فروش، کارشناس فنی…
+  phone      String?
+  email      String?
+  wechat     String?
+  whatsapp   String?
+  language   String? // زبان مکاتبه
+  isPrimary  Boolean   @default(false)
+  notes      String?
+  producerId String?
+  producer   Producer? @relation(fields: [producerId], references: [id], onDelete: Cascade)
+  supplierId String?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+
+  @@index([producerId])
+  @@index([supplierId])
+}
+
+model VendorDocument {
+  id           String    @id @default(cuid())
+  title        String
+  docType      String    @default("OTHER") // CATALOG/CERTIFICATE/CONTRACT/FACTORY_PHOTO/PRODUCT_PHOTO/OTHER
+  url          String
+  storedName   String?
+  producerId   String?
+  producer     Producer? @relation(fields: [producerId], references: [id], onDelete: Cascade)
+  supplierId   String?
+  supplier     Supplier? @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  uploadedById String?
+  createdAt    DateTime  @default(now())
+
+  @@index([producerId])
+  @@index([supplierId])
+}
+
+model SupplierOnCategory {
+  supplierId String
+  categoryId String
+  supplier   Supplier         @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  category   ProducerCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([supplierId, categoryId])
+}
+
+model ShippingCompany {
+  id          String         @id @default(cuid())
+  name        String
+  contactName String?
+  address     String?
+  phone       String?
+  notes       String?
+  types       ShipmentType[]
+  isActive    Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+
+  domesticPackages  DomesticPackage[]
+  mainShipments     MainShipment[]
+  financialAccounts FinancialAccount[]
+}
+
+model Exchange {
+  id          String   @id @default(cuid())
+  name        String
+  contactName String?
+  notes       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  currencyConversions CurrencyConversion[]
+  financialAccounts   FinancialAccount[]
+}
+
+model CommissionAgent {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  projectCommissions ProjectCommission[]
+  financialAccounts  FinancialAccount[]
+}
+
+model Material {
+  id    String @id @default(cuid())
+  name  String @unique
+  parts Part[]
+}
+
+model Coating {
+  id    String @id @default(cuid())
+  name  String @unique
+  parts Part[]
+}
+
+model SystemSetting {
+  key   String @id
+  value String
+}
+
+// تاریخچه نرخ‌های ارز دریافت‌شده (برای ردیابی و گزارش ریسک ارزی)
+model ExchangeRateSnapshot {
+  id        String   @id @default(cuid())
+  usdToIrr  Decimal // تومان به ازای هر دلار (بازار آزاد)
+  cnyToIrr  Decimal // تومان به ازای هر یوآن
+  usdToCny  Decimal // یوآن به ازای هر دلار
+  source    String // tgju | er-api | manual | last-known
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// PROJECTS
+// ─────────────────────────────────────────────
+
+model Project {
+  id                   String    @id @default(cuid())
+  code                 String    @unique
+  customerId           String
+  customer             Customer  @relation(fields: [customerId], references: [id])
+  needDate             DateTime?
+  description          String?
+  // وزن تخمینی کل پروژه (کیلوگرم) — وقتی وزن تک‌تک قطعات وارد نشده، برای برآورد هزینهٔ حمل
+  estimatedWeightKg    Decimal?
+  status               String    @default("ACTIVE")
+  // نوع پروژه: MANUFACTURING (ساخت) | TRADING (خرید کالای آماده) | FORWARDING (حمل بار برای دیگران)
+  type                 String    @default("MANUFACTURING")
+  // آیا مشخصات کالا قبل از استعلام قیمت نیاز به تأیید دارد (جایگزین سبکِ بازبینی فنی برای خرید)
+  specApprovalRequired Boolean   @default(false)
+  archivedAt           DateTime?
+  archivedReason       String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  parts            Part[]
+  partGroups       PartGroup[]
+  files            ProjectFile[]
+  pricingRequests  PricingRequest[]
+  invoices         Invoice[]
+  productionOrders ProductionOrder[]
+  comments         Comment[]
+  tasks            Task[]
+  commissions      ProjectCommission[]
+  shippingCost     ProjectShippingCost?
+  transactions     Transaction[]
+  journalEntries   JournalEntry[]
+  auditLogs        AuditLog[]
+  members          ProjectMember[]
+  forwardingCargo  ForwardingCargo?
+  glLines         GlLine[]
+  glDocuments     GlDocument[]
+  glDocumentLines GlDocumentLine[]
+}
+
+// عضویت کاربر در پروژه — برای کاربرانی با حالت دسترسی SPECIFIC
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model PartGroup {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  color     String  @default("#e2e8f0")
+  parts     Part[]
+}
+
+model Part {
+  id          String     @id @default(cuid())
+  projectId   String
+  project     Project    @relation(fields: [projectId], references: [id])
+  groupId     String?
+  group       PartGroup? @relation(fields: [groupId], references: [id])
+  name        String
+  quantity    Int        @default(1)
+  weightGrams Decimal?
+  materialId  String?
+  material    Material?  @relation(fields: [materialId], references: [id])
+  coatingId   String?
+  coating     Coating?   @relation(fields: [coatingId], references: [id])
+
+  // ─── فیلدهای کالای آماده (فقط برای پروژه‌های TRADING؛ همه اختیاری/nullable) ───
+  brand            String? // برند
+  partModel        String? // مدل کالا
+  unit             String? // واحد شمارش: عدد/کارتن/کیلو/متر
+  dimensions       String? // ابعاد/سایز
+  color            String? // رنگ
+  declaredValue    Decimal? // ارزش اظهاری واحد (برای گمرک)
+  declaredCurrency Currency? // ارز ارزش اظهاری
+  hsCode           String? // کد تعرفهٔ گمرکی (HS) — اختیاری
+  description      String? // توضیحات کالا
+  productLinks     Json? // آرایهٔ لینک‌های محصول/فروشنده
+
+  // target price
+  targetAmount    Decimal?
+  targetCurrency  Currency?
+  targetRateToIRR Decimal?
+  targetRateAt    DateTime?
+
+  technicalStatus TechnicalStatus @default(PENDING)
+  milestone       PartMilestone   @default(CREATED)
+  archivedAt      DateTime?
+  archivedReason  String?
+  sortOrder       Int             @default(0)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  files              ProjectFile[]
+  technicalReview    TechnicalReview?
+  partPrices         PartPrice[]
+  selectedPrice      SelectedPrice?
+  invoiceItems       InvoiceItem[]
+  pricingAssignments PricingProducerPart[]
+}
+
+model ProjectFile {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id])
+  partId       String?
+  part         Part?    @relation(fields: [partId], references: [id])
+  fileType     String
+  originalName String
+  storedName   String
+  url          String
+  sizeBytes    Int?
+  mimeType     String?
+  uploadedById String?
+  description  String? // شرح فایل (جدا از نام فایل) — زیر فایل نمایش داده می‌شود
+  createdAt    DateTime @default(now())
+
+  // بازبینی فنی per-drawing (برای فایل‌های نقشه): وضعیت فعلی این نقشه
+  reviewStatus TechnicalStatus?
+  reviewReason String?
+  reviewedById String?
+  reviewedAt   DateTime?
+}
+
+// آرشیو کامل تصمیم‌های بازبینی هر نقشه (هر رد/تأیید با دلیل و کاربر و زمان حفظ می‌شود)
+model DrawingReview {
+  id           String          @id @default(cuid())
+  fileId       String
+  partId       String
+  status       TechnicalStatus
+  reason       String?
+  fileUrl      String? // snapshot نشانی نقشه در لحظهٔ تصمیم (برای آرشیو نسخهٔ ردشده)
+  fileName     String?
+  reviewedById String?
+  reviewedAt   DateTime        @default(now())
+
+  @@index([fileId])
+  @@index([partId])
+}
+
+model ProjectCommission {
+  id         String          @id @default(cuid())
+  projectId  String
+  project    Project         @relation(fields: [projectId], references: [id])
+  agentId    String
+  agent      CommissionAgent @relation(fields: [agentId], references: [id])
+  percentage Decimal
+  createdAt  DateTime        @default(now())
+}
+
+model ProjectShippingCost {
+  id                 String    @id @default(cuid())
+  projectId          String    @unique
+  project            Project   @relation(fields: [projectId], references: [id])
+  ratePerKgAmount    Decimal?
+  ratePerKgCurrency  Currency?
+  ratePerKgRateToIRR Decimal?
+  updatedAt          DateTime  @updatedAt
+}
+
+// ─────────────────────────────────────────────
+// TECHNICAL REVIEW
+// ─────────────────────────────────────────────
+
+model TechnicalReview {
+  id           String          @id @default(cuid())
+  partId       String          @unique
+  part         Part            @relation(fields: [partId], references: [id])
+  status       TechnicalStatus @default(PENDING)
+  reviewedById String?
+  reviewer     User?           @relation(fields: [reviewedById], references: [id])
+  notes        String?
+  rejectReason String?
+  reviewedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+// ─────────────────────────────────────────────
+// PRICING
+// ─────────────────────────────────────────────
+
+model PricingRequest {
+  id             String               @id @default(cuid())
+  projectId      String
+  project        Project              @relation(fields: [projectId], references: [id])
+  status         PricingRequestStatus @default(IN_PROGRESS)
+  notes          String?
+  archivedAt     DateTime?
+  archivedReason String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  producers  PricingProducer[]
+  partPrices PartPrice[]
+}
+
+model PricingProducer {
+  id               String         @id @default(cuid())
+  pricingRequestId String
+  pricingRequest   PricingRequest @relation(fields: [pricingRequestId], references: [id])
+  // فروشنده = سازنده (ساخت) یا تامین‌کننده (خرید). دقیقاً یکی از این دو پر است.
+  producerId       String?
+  producer         Producer?      @relation(fields: [producerId], references: [id])
+  supplierId       String?
+  supplier         Supplier?      @relation(fields: [supplierId], references: [id])
+  deliveryDays     Int?
+  proformaFileUrl  String? // آخرین پرفرما (برای نمایش سریع)
+  createdAt        DateTime       @default(now())
+
+  parts PricingProducerPart[] // قطعاتی که این فروشنده باید قیمت‌شان دهد (خالی = همهٔ قطعات، برای سازگاری با داده‌های قبلی)
+
+  @@unique([pricingRequestId, producerId])
+  @@unique([pricingRequestId, supplierId])
+}
+
+// نگاشت سازندهٔ یک درخواست قیمت به قطعات مشخص (تخصیص per-part / per-group). چند-به-چند: یک قطعه می‌تواند به چند سازنده برود (قیمت رقابتی).
+model PricingProducerPart {
+  id                String          @id @default(cuid())
+  pricingProducerId String
+  pricingProducer   PricingProducer @relation(fields: [pricingProducerId], references: [id], onDelete: Cascade)
+  partId            String
+  part              Part            @relation(fields: [partId], references: [id])
+  createdAt         DateTime        @default(now())
+
+  @@unique([pricingProducerId, partId])
+}
+
+// آرشیو نسخه‌های پرفرمای سازنده (با هر بازآپلود، نسخه قبلی حفظ می‌شود)
+model PricingProforma {
+  id               String   @id @default(cuid())
+  pricingRequestId String
+  producerId       String?
+  supplierId       String?
+  url              String
+  note             String?
+  uploadedById     String?
+  createdAt        DateTime @default(now())
+
+  @@index([pricingRequestId, producerId])
+}
+
+model PartPrice {
+  id               String         @id @default(cuid())
+  pricingRequestId String
+  pricingRequest   PricingRequest @relation(fields: [pricingRequestId], references: [id])
+  partId           String
+  part             Part           @relation(fields: [partId], references: [id])
+  // فروشندهٔ قیمت‌دهنده: سازنده یا تامین‌کننده (دقیقاً یکی)
+  producerId       String?
+  supplierId       String?
+  amount           Decimal
+  currency         Currency
+  rateToIRR        Decimal
+  rateAt           DateTime
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([pricingRequestId, partId, producerId])
+}
+
+model SelectedPrice {
+  id         String   @id @default(cuid())
+  partId     String   @unique
+  part       Part     @relation(fields: [partId], references: [id])
+  // فروشندهٔ برنده: سازنده (ساخت) یا تامین‌کننده (خرید)
+  producerId String?
+  supplierId String?
+  amount     Decimal
+  currency   Currency
+  rateToIRR  Decimal
+  rateAt     DateTime
+  lockedAt   DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────
+// INVOICING
+// ─────────────────────────────────────────────
+
+model Invoice {
+  id            String        @id @default(cuid())
+  projectId     String
+  project       Project       @relation(fields: [projectId], references: [id])
+  versionNumber Int           @default(1)
+  versionCode   String
+  currency      Currency      @default(IRR)
+  status        InvoiceStatus @default(DRAFT)
+  rejectReason  String?
+  notes         String?
+
+  totalAmount    Decimal?
+  totalCurrency  Currency?
+  totalRateToIRR Decimal?
+  totalRateAt    DateTime?
+
+  // مالیات بر ارزش افزوده — totalAmount شامل مالیات ذخیره می‌شود (طلب مشتری هم شامل آن است)
+  hasVat     Boolean  @default(false)
+  vatPercent Decimal?
+  vatAmount  Decimal?
+
+  advanceAmount    Decimal?
+  advanceCurrency  Currency?
+  advanceRateToIRR Decimal?
+  advanceRateAt    DateTime?
+
+  // زمان آماده‌سازی سفارش: «X روز کاری پس از واریز پیش‌پرداخت»
+  prepDays Int?
+  prepNote String?
+
+  pdfUrl      String?
+  confirmedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items InvoiceItem[]
+}
+
+model InvoiceItem {
+  id        String  @id @default(cuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+  partId    String
+  part      Part    @relation(fields: [partId], references: [id])
+
+  costAmount    Decimal
+  costCurrency  Currency
+  costRateToIRR Decimal
+
+  saleAmount    Decimal
+  saleCurrency  Currency
+  saleRateToIRR Decimal
+  saleRateAt    DateTime
+
+  profitMargin Decimal?
+  createdAt    DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────
+// PRODUCTION ORDERS
+// ─────────────────────────────────────────────
+
+model ProductionOrder {
+  id               String                @id @default(cuid())
+  code             String                @unique
+  projectId        String
+  project          Project               @relation(fields: [projectId], references: [id])
+  // فروشنده: سازنده (ساخت) یا تامین‌کننده (خرید). دقیقاً یکی پر است.
+  producerId       String?
+  producer         Producer?             @relation(fields: [producerId], references: [id])
+  supplierId       String?
+  supplier         Supplier?             @relation(fields: [supplierId], references: [id])
+  // نوع سفارش: PRODUCTION (ساخت) | PURCHASE (خرید کالای آماده)
+  kind             String                @default("PRODUCTION")
+  status           ProductionOrderStatus @default(NEW)
+  // مرحلهٔ سفارش خرید (فقط PURCHASE): ORDERED|DEPOSIT_PAID|PREPARING|SETTLED|SHIPPED|RECEIVED|READY
+  purchaseStage    String?
+  // بازرسی دریافت در چین (فقط PURCHASE، اختیاری): PENDING|PASSED|SKIPPED
+  inspectionStatus String?
+  inspectionNote   String?
+  startDate        DateTime?
+  estimatedEndDate DateTime?
+  actualEndDate    DateTime?
+  notes            String?
+  finalWeightGrams Decimal?
+  packagingDetails String?
+  delayNotifiedAt  DateTime? // زمان آخرین اعلان تأخیر تولید (برای جلوگیری از اعلان تکراری)
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  orderFiles    OrderFile[]
+  domesticItems DomesticPackageItem[]
+  reminderTasks Task[]
+}
+
+model OrderFile {
+  id           String          @id @default(cuid())
+  orderId      String
+  order        ProductionOrder @relation(fields: [orderId], references: [id])
+  fileType     String
+  storedName   String
+  url          String
+  sizeBytes    Int?
+  uploadedById String?
+  createdAt    DateTime        @default(now())
+}
+
+// ─────────────────────────────────────────────
+// SHIPPING
+// ─────────────────────────────────────────────
+
+model DomesticPackage {
+  id                String                @id @default(cuid())
+  code              String                @unique
+  shippingCompanyId String
+  shippingCompany   ShippingCompany       @relation(fields: [shippingCompanyId], references: [id])
+  referenceNo       String?
+  notes             String?
+  status            DomesticPackageStatus @default(IN_TRANSIT)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  items            DomesticPackageItem[]
+  shipmentPackages ShipmentPackage[]
+}
+
+model DomesticPackageItem {
+  id          String          @id @default(cuid())
+  packageId   String
+  package     DomesticPackage @relation(fields: [packageId], references: [id])
+  orderId     String
+  order       ProductionOrder @relation(fields: [orderId], references: [id])
+  trackingNo  String?
+  isDelivered Boolean         @default(false)
+  deliveredAt DateTime?
+  createdAt   DateTime        @default(now())
+}
+
+model MainShipment {
+  id                       String             @id @default(cuid())
+  code                     String             @unique
+  shippingCompanyId        String
+  shippingCompany          ShippingCompany    @relation(fields: [shippingCompanyId], references: [id])
+  forwarderRef             String?
+  notes                    String?
+  type                     ShipmentType
+  status                   MainShipmentStatus @default(IN_TRANSIT)
+  arrivedAt                DateTime?
+  deliveredToUsAt          DateTime?
+  freightInvoiceRegistered Boolean            @default(false)
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+
+  packages         ShipmentPackage[]
+  files            ShipmentFile[]
+  freightInvoice   FreightInvoice?
+  forwardingCargos ForwardingCargo[] // بارهای فورواردینگ (بدون لایهٔ بستهٔ داخلی، مستقیم روی محموله)
+}
+
+// بار فورواردینگ (کسب‌وکار سوم): حمل بار برای مشتری. 1:1 با پروژهٔ FORWARDING.
+// مستقیم به MainShipment وصل می‌شود (بدون DomesticPackage). سهم هزینهٔ حمل از تسهیم فاکتور حمل موجود می‌آید.
+model ForwardingCargo {
+  id               String        @id @default(cuid())
+  projectId        String        @unique
+  project          Project       @relation(fields: [projectId], references: [id])
+  // مشخصات بار (تصمیم #۹)
+  weightKg         Decimal?
+  volumeCbm        Decimal?
+  packagesCount    Int?
+  senderName       String? // فرستنده در چین
+  senderContact    String?
+  goodsDescription String?
+  declaredValue    Decimal?
+  declaredCurrency Currency?
+  route            String? // AIR | SEA | LAND | RAIL
+  transit          String? // DIRECT (مستقیم ایران) | VIA_DUBAI
+  // کرایهٔ فورواردینگ (تصمیم #۸): BY_WEIGHT (نرخ×kg) | BY_VOLUME (نرخ×CBM) | FLAT (مقطوع)
+  freightMode      String?
+  freightRate      Decimal? // نرخ به‌ازای واحد (kg یا CBM)
+  flatAmount       Decimal? // مبلغ مقطوع
+  quoteCurrency    Currency      @default(USD)
+  quotedAmount     Decimal? // مبلغ نهایی کرایه (محاسبه‌شده یا مقطوع)
+  quoteConfirmedAt DateTime? // با تأیید، درآمد فورواردینگ در حسابداری ثبت می‌شود
+  // چرخهٔ عمر (تصمیم #۱۰): AWAITING_CHINA | RECEIVED_CHINA | IN_TRANSIT | ARRIVED | DELIVERED
+  stage            String        @default("AWAITING_CHINA")
+  shipmentId       String?
+  shipment         MainShipment? @relation(fields: [shipmentId], references: [id])
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  files ForwardingCargoFile[]
+}
+
+model ForwardingCargoFile {
+  id           String          @id @default(cuid())
+  cargoId      String
+  cargo        ForwardingCargo @relation(fields: [cargoId], references: [id])
+  fileType     String
+  storedName   String
+  url          String
+  sizeBytes    Int?
+  uploadedById String?
+  createdAt    DateTime        @default(now())
+}
+
+model ShipmentPackage {
+  id         String          @id @default(cuid())
+  shipmentId String
+  shipment   MainShipment    @relation(fields: [shipmentId], references: [id])
+  packageId  String
+  package    DomesticPackage @relation(fields: [packageId], references: [id])
+
+  @@unique([shipmentId, packageId])
+}
+
+model ShipmentFile {
+  id         String       @id @default(cuid())
+  shipmentId String
+  shipment   MainShipment @relation(fields: [shipmentId], references: [id])
+  fileType   String
+  storedName String
+  url        String
+  createdAt  DateTime     @default(now())
+}
+
+model CustomerDelivery {
+  id             String   @id @default(cuid())
+  projectId      String   @unique
+  packagingOk    Boolean  @default(false)
+  notes          String?
+  overrideReason String?
+  deliveredAt    DateTime @default(now())
+  deliveredById  String?
+}
+
+// ─────────────────────────────────────────────
+// ACCOUNTING
+// ─────────────────────────────────────────────
+
+model FinancialAccount {
+  id       String   @id @default(cuid())
+  name     String
+  type     String
+  currency Currency
+  balance  Decimal  @default(0)
+  // balance is stored as signed (debit − credit) cumulative, in the account's own currency
+
+  // ── چارت حساب‌ها (docs/accounting-spec.md بخش ۱) ──
+  // طبقه‌بندی حسابداری. ماهیت بدهکار/بستانکار از همین خوانده می‌شود، نه از حدسِ controlKind.
+  accountType AccountType?
+  // کد حساب فقط برای گره‌های چارت (سرگروه‌ها و حساب‌های کنترلی) پر می‌شود.
+  // کیف پول طرف‌حساب‌ها دفتر معین‌اند و کد ندارند؛ با parentId به گروه ارزی‌شان وصل می‌شوند.
+  code        String?            @unique
+  parentId    String?
+  parent      FinancialAccount?  @relation("AccountTree", fields: [parentId], references: [id])
+  children    FinancialAccount[] @relation("AccountTree")
+  // سرگروه‌ها فقط تجمیع می‌کنند و مستقیم سند نمی‌گیرند
+  isPostable  Boolean            @default(true)
+
+  controlKind       String?
+  // controlKind: SALES | PURCHASE | COMMISSION | FREIGHT | FX_* | ... (only for COMPANY control accounts)
+  ownerId           String?
+  ownerType         String?
+  // ownerType: COMPANY | CUSTOMER | PRODUCER | SUPPLIER | CARRIER | EXCHANGE | COMMISSION_AGENT
+  customerId        String?
+  customer          Customer?        @relation(fields: [customerId], references: [id])
+  producerId        String?
+  producer          Producer?        @relation(fields: [producerId], references: [id])
+  supplierId        String?
+  supplier          Supplier?        @relation(fields: [supplierId], references: [id])
+  shippingCompanyId String?
+  shippingCompany   ShippingCompany? @relation(fields: [shippingCompanyId], references: [id])
+  exchangeId        String?
+  exchange          Exchange?        @relation(fields: [exchangeId], references: [id])
+  commissionAgentId String?
+  commissionAgent   CommissionAgent? @relation(fields: [commissionAgentId], references: [id])
+  isActive          Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  outgoingTransactions Transaction[]        @relation("FromAccount")
+  incomingTransactions Transaction[]        @relation("ToAccount")
+  fromConversions      CurrencyConversion[] @relation("ConversionFrom")
+  toConversions        CurrencyConversion[] @relation("ConversionTo")
+  feeConversions       CurrencyConversion[] @relation("ConversionFee")
+  journalLines         JournalLine[]
+}
+
+// ─────────────────────────────────────────────
+// DOUBLE-ENTRY JOURNAL
+// ─────────────────────────────────────────────
+
+model JournalEntry {
+  id             String   @id @default(cuid())
+  entryNo        Int      @unique @default(autoincrement()) // شماره سند
+  date           DateTime @default(now())
+  description    String?
+  eventType      String? // INVOICE_CONFIRMED | TRANSFER | CONVERSION | FREIGHT_INVOICE | MANUAL | ADJUSTMENT
+  sourceType     String? // Invoice | Shipment | Manual ...
+  sourceId       String?
+  projectId      String?
+  project        Project? @relation(fields: [projectId], references: [id])
+  attachmentUrls String[]
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt // default لازم است چون رکوردهای موجود باید مقدار بگیرند
+
+  // ── اصلاح و ابطال ──
+  // POSTED = عادی | REVERSED = باطل‌شده (سند برگشتی دارد) | REVERSAL = خودش سند برگشتی است
+  status         String           @default("POSTED")
+  reversesId     String?          @unique // اگر سند برگشتی است، مرجعِ سندی که باطل می‌کند
+  reverses       JournalEntry?    @relation("EntryReversal", fields: [reversesId], references: [id])
+  reversedBy     JournalEntry?    @relation("EntryReversal")
+  reversedAt     DateTime?
+  reversalReason String?
+  // سرفصل هزینه/درآمد عمومی (تراکنش‌های بی‌ارتباط با پروژه)
+  categoryId     String?
+  category       ExpenseCategory? @relation(fields: [categoryId], references: [id])
+
+  lines     JournalLine[]
+  revisions JournalEntryRevision[]
+
+  @@index([date])
+  @@index([eventType, date])
+  @@index([categoryId, date])
+}
+
+// تاریخچهٔ ویرایش سند — عکسِ وضعیت «قبل از تغییر» تا ردپای حسابرسی حفظ شود
+model JournalEntryRevision {
+  id         String       @id @default(cuid())
+  entryId    String
+  entry      JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  snapshot   Json // { date, description, projectId, categoryId, lines: [...] } پیش از ویرایش
+  reason     String?
+  editedById String?
+  createdAt  DateTime     @default(now())
+
+  @@index([entryId, createdAt])
+}
+
+// قفل دورهٔ مالی — بعد از بستن دوره، سند آن بازه فقط با سند برگشتی اصلاح می‌شود
+model FiscalPeriod {
+  id         String    @id @default(cuid())
+  year       Int // سال شمسی
+  month      Int? // ۱..۱۲ ؛ null یعنی کل سال
+  closedAt   DateTime?
+  closedById String?
+  note       String?
+
+  @@unique([year, month])
+}
+
+// سرفصل هزینه/درآمد برای تراکنش‌های عمومی (اجاره، حقوق، قبض، سود بانکی…)
+model ExpenseCategory {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  kind      String // EXPENSE | INCOME
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  entries JournalEntry[]
+}
+
+model JournalLine {
+  id        String           @id @default(cuid())
+  entryId   String
+  entry     JournalEntry     @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  accountId String
+  account   FinancialAccount @relation(fields: [accountId], references: [id])
+  debit     Decimal          @default(0) // in account currency
+  credit    Decimal          @default(0) // in account currency
+  currency  Currency
+  rateToIRR Decimal          @default(1)
+  memo      String?
+}
+
+model Transaction {
+  id            String            @id @default(cuid())
+  type          TransactionType
+  fromAccountId String?
+  fromAccount   FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id])
+  toAccountId   String?
+  toAccount     FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id])
+
+  amount    Decimal
+  currency  Currency
+  rateToIRR Decimal
+  rateAt    DateTime
+
+  projectId      String?
+  project        Project? @relation(fields: [projectId], references: [id])
+  eventType      String?
+  sourceId       String?
+  description    String?
+  attachmentUrls String[]
+  createdById    String?
+  createdAt      DateTime @default(now())
+}
+
+model CurrencyConversion {
+  id            String           @id @default(cuid())
+  fromAccountId String
+  fromAccount   FinancialAccount @relation("ConversionFrom", fields: [fromAccountId], references: [id])
+  toAccountId   String
+  toAccount     FinancialAccount @relation("ConversionTo", fields: [toAccountId], references: [id])
+
+  fromAmount    Decimal
+  fromCurrency  Currency
+  toAmount      Decimal
+  toCurrency    Currency
+  effectiveRate Decimal
+
+  feeAmount    Decimal?
+  feeCurrency  Currency?
+  feeAccountId String?
+  feeAccount   FinancialAccount? @relation("ConversionFee", fields: [feeAccountId], references: [id])
+  exchangeId   String?
+  exchange     Exchange?         @relation(fields: [exchangeId], references: [id])
+
+  description    String?
+  attachmentUrls String[]
+  createdById    String?
+  createdAt      DateTime @default(now())
+}
+
+model FreightInvoice {
+  id          String       @id @default(cuid())
+  shipmentId  String       @unique
+  shipment    MainShipment @relation(fields: [shipmentId], references: [id])
+  invoiceNo   String?
+  invoiceDate DateTime?
+
+  totalAmount    Decimal
+  totalCurrency  Currency
+  totalRateToIRR Decimal
+  totalRateAt    DateTime
+
+  // ریز هزینه‌ها (مشابه فرم مرجع): آرایه‌ای از { description, amount } که جمعشان = totalAmount
+  costBreakdown Json?
+
+  registeredAt   DateTime @default(now())
+  registeredById String?
+}
+
+// ─────────────────────────────────────────────
+// ARCHIVE
+// ─────────────────────────────────────────────
+
+model ArchiveEntry {
+  id           String        @id @default(cuid())
+  entityType   String
+  entityId     String
+  reason       ArchiveReason
+  reasonNotes  String?
+  snapshot     Json
+  archivedById String?
+  archivedAt   DateTime      @default(now())
+  restoredAt   DateTime?
+  restoredById String?
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id])
+  action    AuditAction
+  entity    String
+  entityId  String?
+  projectId String?
+  project   Project?    @relation(fields: [projectId], references: [id])
+  changes   Json?
+  ipAddress String?
+  createdAt DateTime    @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// TASKS & NOTIFICATIONS
+// ─────────────────────────────────────────────
+
+model Task {
+  id           String           @id @default(cuid())
+  title        String
+  notes        String?
+  assignedToId String?
+  assignedTo   User?            @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  assigneeIds  String[] // multiple assignees (shared task)
+  priority     String           @default("NORMAL") // LOW | NORMAL | HIGH
+  createdById  String?
+  createdBy    User?            @relation("CreatedTasks", fields: [createdById], references: [id])
+  dueAt        DateTime?
+  repeat       TaskRepeat       @default(NONE)
+  isDone       Boolean          @default(false)
+  doneAt       DateTime?
+  doneReport   String?
+  projectId    String?
+  project      Project?         @relation(fields: [projectId], references: [id])
+  entityType   String?
+  entityId     String?
+  orderId      String?
+  order        ProductionOrder? @relation(fields: [orderId], references: [id])
+  comments     Comment[]
+  checklist    ChecklistItem[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model ChecklistItem {
+  id          String    @id @default(cuid())
+  taskId      String
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  text        String
+  assigneeIds String[] // who is responsible for this checklist item
+  isDone      Boolean   @default(false)
+  doneById    String?
+  doneAt      DateTime?
+  order       Int       @default(0)
+  createdAt   DateTime  @default(now())
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  type       String
+  message    String
+  entityType String?
+  entityId   String?
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────
+// COMMENTS
+// ─────────────────────────────────────────────
+
+model Comment {
+  id             String    @id @default(cuid())
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id])
+  taskId         String?
+  task           Task?     @relation(fields: [taskId], references: [id])
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  parentId       String?
+  parent         Comment?  @relation("Replies", fields: [parentId], references: [id])
+  replies        Comment[] @relation("Replies")
+  text           String
+  attachmentUrls String[]
+  isSystem       Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// ─────────────────────────────────────────────
+// USER FEEDBACK / BUG REPORTS (برای آپدیت‌های بعدی)
+// ─────────────────────────────────────────────
+
+enum FeedbackType {
+  BUG
+  FEATURE
+}
+
+enum FeedbackStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  DISMISSED
+}
+
+model FeedbackReport {
+  id            String         @id @default(cuid())
+  type          FeedbackType   @default(BUG)
+  module        String? // ماژول/بخش سیستم
+  page          String? // مکان دقیق (صفحه/پنجره)
+  title         String
+  description   String
+  steps         String? // مراحل بازتولید باگ یا کاربردِ قابلیت
+  priority      String         @default("NORMAL") // LOW | NORMAL | HIGH
+  status        FeedbackStatus @default(OPEN)
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime       @default(now())
+
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────
+// MARKET — بازار صادرات (کمپین تماس با فروشندگان خارج از کشور)
+//
+// این ماژول عمداً از CRM داخلی (Lead/CrmInteraction) جداست: آن‌جا قیف
+// «سرنخ → مشتری → پروژه» برای ساخت قطعه است، این‌جا کمپینِ تماسِ فروشِ
+// چند محصولِ آمادهٔ صادراتی. تنها پل بین دو دنیا `MarketContact.customerId`
+// است که موقع «تبدیل به مشتری» پر می‌شود.
+// ─────────────────────────────────────────────
+
+/// وضعیت کلی مخاطب در کمپین — ترتیبش همان ترتیب قیف است
+/// مرحلهٔ پیگیری. ترتیب بر اساس «کار دستِ کیست؟» چیده شده نه گرمی سرنخ،
+/// چون سؤال روزمرهٔ تیم این است: «الان باید سراغ کی بروم و چه کار کنم؟»
+enum MarketStatus {
+  NEW // هنوز تماس نگرفته‌ایم
+  PHONE_ONLY // واتساپ ندارد — فقط تماس تلفنی
+  ATTEMPTED // پیام/عکس فرستادیم، هنوز جواب نداده — منتظر پاسخ
+  NEEDS_RECALL // گفت بررسی می‌کنم و خبر می‌دهم — باید یادآوری کنیم
+  AWAITING_QUOTE // قیمت/تخفیف/لیست خواسته — توپ در زمین ماست
+  MEETING_SET // قرار نمایشگاه یا صحبت نمایندگی
+  CONTACTED // صحبت شد (قدیمی — نگه داشته شده برای رکوردهای پیشین)
+  INTERESTED // علاقه‌مند
+  NEGOTIATING // مذاکرهٔ قیمت/شرایط
+  SAMPLE_SENT // نمونه/کاتالوگ فرستادیم
+  CUSTOMER // خرید کرد
+  NOT_INTERESTED // علاقه‌مند نیست
+  UNREACHABLE // شمارهٔ اشتباه یا غیرقابل دسترس
+  BLACKLIST
+}
+
+/// نظر مخاطب دربارهٔ خودِ محصول
+enum MarketInterestLevel {
+  NOT_DISCUSSED // دربارهٔ این محصول صحبت نشده
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+/// نظر مخاطب دربارهٔ قیمتی که اعلام کردیم
+enum MarketPriceOpinion {
+  NOT_DISCUSSED
+  GOOD // قیمت خوب است
+  ACCEPTABLE // قابل قبول
+  EXPENSIVE // گران است
+}
+
+/// کانال ارتباط — در عراق واتساپ به‌اندازهٔ تلفن مهم است
+enum MarketChannel {
+  CALL
+  WHATSAPP
+  TELEGRAM
+  INSTAGRAM
+  EMAIL
+  VISIT
+  OTHER
+}
+
+enum MarketCallResult {
+  ANSWERED
+  NO_ANSWER
+  BUSY
+  WRONG_NUMBER
+  CALLBACK // گفت بعداً زنگ بزن
+  REJECTED
+}
+
+enum MarketPromiseKind {
+  SAMPLE // نمونهٔ محصول
+  CATALOG
+  PRICE_LIST
+  QUOTE // پیش‌فاکتور
+  VIDEO
+  CERTIFICATE
+  OTHER
+}
+
+enum MarketPromiseStatus {
+  PENDING
+  SENT
+  DELIVERED
+  CANCELLED
+}
+
+enum MarketContactType {
+  SHOP // مغازه
+  DISTRIBUTOR // شرکت پخش
+  CLINIC // مطب/کلینیک
+  LAB // لابراتوار
+  IMPORTER // واردکننده
+  OTHER
+}
+
+/// استان و شهر — دسته‌بندی اصلی کمپین. جدول است (نه ثابتِ کد) تا کاربر
+/// بتواند شهر جدید اضافه کند بدون انتشار نسخهٔ جدید.
+model MarketCity {
+  id          String  @id @default(cuid())
+  governorate String // استان (محافظه)
+  name        String // نام فارسی شهر
+  nameAr      String? // نام عربی — برای جستجو و متن پیام
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  contacts MarketContact[]
+
+  @@unique([governorate, name])
+  @@index([governorate])
+}
+
+/// محصول صادراتی. جدول است تا محصول ششم بدون مهاجرت اضافه شود.
+model MarketProduct {
+  id           String   @id @default(cuid())
+  name         String   @unique // فرز سرامیکی، سند بلاستر، …
+  nameAr       String?
+  nameEn       String?
+  code         String?  @unique
+  unit         String? // عدد، بسته، کیلوگرم…
+  listPriceUsd Float? // قیمت پایهٔ اعلامی ما
+  moq          String? // حداقل سفارش
+  description  String?
+  imageUrl     String?
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  interests MarketInterest[]
+  promises  MarketPromise[]
+  templates MarketTemplate[]
+}
+
+/// مخاطب کمپین — مغازه/شرکت/کلینیک فروشندهٔ تجهیزات
+model MarketContact {
+  id        String            @id @default(cuid())
+  code      String            @unique // MK-00001
+  name      String
+  nameAr    String?
+  ownerName String? // نام صاحب/مسئول خرید
+  type      MarketContactType @default(SHOP)
+
+  cityId  String?
+  city    MarketCity? @relation(fields: [cityId], references: [id])
+  address String?
+  mapUrl  String?
+
+  phone     String?
+  phone2    String?
+  whatsapp  String?
+  telegram  String?
+  instagram String?
+  email     String?
+  website   String?
+  /// شکل یکدست‌شدهٔ شماره‌ها (مثل 9647701234567) برای تشخیص تکراری و جستجو.
+  /// همهٔ شماره‌های رکورد داخل این آرایه می‌آیند، نه فقط شمارهٔ اصلی.
+  phoneNorm String[] @default([])
+
+  language String? // AR | KU | EN | FA — زبان مکالمه
+  source   String? // منبع لیست (اینستاگرام، نمایشگاه، معرفی…)
+  status   MarketStatus @default(NEW)
+
+  /// سه‌حالته عمداً: `null` یعنی هنوز نپرسیده‌ایم، که با «نه» یکی نیست.
+  /// اگر Boolean ساده بود، همهٔ ۱۹۰۰ مخاطبِ نپرسیده «خیر» به حساب می‌آمدند
+  /// و فهرستِ «چه کسانی را باید بپرسیم» ساختنی نبود.
+  attendsExhibition Boolean? // در نمایشگاه (دندان‌پزشکی عراق) غرفه/حضور دارد
+  wantsAgency       Boolean? // تمایل به گرفتن نمایندگی دارد
+
+  /// «محصول دیگری هم خواست؟» — چیزی بیرون از فهرست شش‌تایی ما.
+  /// متن آزاد است چون از قبل نمی‌دانیم چه می‌خواهند؛ همین درخواست‌ها ورودیِ
+  /// تصمیمِ «چه محصولی را بعداً اضافه کنیم» هستند.
+  otherProductsNote String?
+  rating            Int? // رتبهٔ دستی ۱..۵
+  score             Int      @default(0) // امتیاز خودکار ۰..۱۰۰
+  tags              String[] @default([])
+  notes             String?
+
+  assignedToId String?
+  assignedTo   User?   @relation("AssignedMarketContacts", fields: [assignedToId], references: [id])
+
+  nextFollowUpAt     DateTime?
+  followUpReason     String?
+  followUpNotifiedAt DateTime? // جلوگیری از اعلان تکراری برای یک موعد
+
+  lastContactAt   DateTime?
+  firstContactAt  DateTime?
+  contactAttempts Int       @default(0)
+  doNotCall       Boolean   @default(false)
+
+  /// بایگانی: شمارهٔ خراب، یا محصولات ما را نمی‌خواهد. از لیست کاری بیرون
+  /// می‌رود ولی حذف نمی‌شود — تاریخچه و دلیلش می‌ماند تا دوباره سراغش نرویم.
+  /// جدا از `status` است چون «بایگانی» یک مرحلهٔ قیف نیست، یک تصمیم است.
+  archived       Boolean   @default(false)
+  archivedReason String?
+  archivedAt     DateTime?
+
+  /// پس از «تبدیل به مشتری» به مشتری سیستم اصلی وصل می‌شود
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  interests MarketInterest[]
+  calls     MarketCall[]
+  promises  MarketPromise[]
+  files     MarketFile[]
+  waJobs    MarketWaJob[]
+
+  @@index([cityId])
+  @@index([status])
+  @@index([nextFollowUpAt])
+  @@index([assignedToId])
+  @@index([phoneNorm])
+}
+
+/// نظر یک مخاطب دربارهٔ یک محصول — قلب این ماژول.
+/// یک ردیف به‌ازای هر (مخاطب × محصول)؛ اگر ردیفی نباشد یعنی صحبت نشده.
+model MarketInterest {
+  id        String        @id @default(cuid())
+  contactId String
+  contact   MarketContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  productId String
+  product   MarketProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  level              MarketInterestLevel @default(NOT_DISCUSSED)
+  priceOpinion       MarketPriceOpinion  @default(NOT_DISCUSSED)
+  quotedPriceUsd     Float? // قیمتی که ما اعلام کردیم
+  targetPriceUsd     Float? // قیمتی که او می‌خواهد
+  currentSupplier    String? // الان از چه برند/کشوری می‌خرد
+  competitorPriceUsd Float?
+  monthlyQty         Int? // تخمین مصرف ماهانه
+  sampleRequested    Boolean             @default(false)
+  note               String? // عین حرفش دربارهٔ همین محصول
+
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([contactId, productId])
+  // فیلترِ «همهٔ کسانی که فلان محصول را پسندیدند» روی همین ایندکس می‌نشیند
+  @@index([productId, level])
+  @@index([productId, priceOpinion])
+}
+
+/// یک تماس/گفتگو — «چه صحبتی با او کردیم»
+model MarketCall {
+  id          String            @id @default(cuid())
+  contactId   String
+  contact     MarketContact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  channel     MarketChannel     @default(CALL)
+  direction   String            @default("OUT") // OUT=ما زنگ زدیم، IN=او تماس گرفت
+  occurredAt  DateTime          @default(now())
+  durationMin Int?
+  result      MarketCallResult?
+  spokeWith   String? // با چه کسی صحبت شد
+  summary     String // متن صحبت
+  createdById String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([contactId, occurredAt])
+  @@index([createdById])
+}
+
+/// چیزی که قول داده‌ایم برایش بفرستیم — تا یادمان نرود
+model MarketPromise {
+  id           String              @id @default(cuid())
+  contactId    String
+  contact      MarketContact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  productId    String?
+  product      MarketProduct?      @relation(fields: [productId], references: [id])
+  kind         MarketPromiseKind   @default(SAMPLE)
+  description  String?
+  qty          Int?
+  promisedAt   DateTime            @default(now())
+  dueAt        DateTime? // موعد قول‌داده‌شده
+  status       MarketPromiseStatus @default(PENDING)
+  sentAt       DateTime?
+  carrier      String?
+  trackingNo   String?
+  costUsd      Float?
+  assignedToId String?
+  assignedTo   User?               @relation("AssignedMarketPromises", fields: [assignedToId], references: [id])
+  notifiedAt   DateTime? // جلوگیری از اعلان تکراری
+  createdById  String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([contactId])
+  @@index([status, dueAt])
+}
+
+/// پیوست مخاطب — عکس مغازه، کارت ویزیت، لیست قیمت رقیب…
+model MarketFile {
+  id           String        @id @default(cuid())
+  contactId    String
+  contact      MarketContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  url          String
+  originalName String
+  size         Int?
+  kind         String? // PHOTO | CARD | PRICELIST | OTHER
+  uploadedById String?
+  createdAt    DateTime      @default(now())
+
+  @@index([contactId])
+}
+
+/// وضعیت یک پیام واتساپ در صف
+enum MarketWaJobStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+/// صفِ پیام‌های واتساپ.
+///
+/// چرا صف و نه ارسال مستقیم: سرور در تهران است و از آن‌جا `web.whatsapp.com`
+/// باز نمی‌شود، پس خودِ سرور نمی‌تواند پیام بفرستد. برنامهٔ کوچکی («پل») روی
+/// لپ‌تاپِ کاربر این صف را می‌خواند و می‌فرستد. مرورگر هم نمی‌تواند مستقیم با
+/// آن برنامه حرف بزند (کروم دسترسی صفحهٔ اینترنتی به `localhost` را می‌بندد)،
+/// پس جهت برعکس شد: پل به سرور سر می‌زند، نه سرور/صفحه به پل.
+///
+/// سودِ جانبی‌اش این است که ارسال از گوشی هم کار می‌کند: پیام در صف می‌نشیند و
+/// لپ‌تاپ هر وقت روشن بود می‌فرستدش.
+model MarketWaJob {
+  id          String            @id @default(cuid())
+  contactId   String
+  contact     MarketContact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  /// شکل یکدست‌شدهٔ شماره در لحظهٔ صف‌شدن — بعداً اگر شمارهٔ مخاطب عوض شد،
+  /// پیامِ در صف نباید ناگهان به شمارهٔ دیگری برود
+  phone       String
+  text        String
+  /// نشانی «برگهٔ محصولات» روی /uploads؛ پل خودش دانلودش می‌کند
+  imageUrl    String?
+  imageName   String?
+  status      MarketWaJobStatus @default(PENDING)
+  error       String?
+  attempts    Int               @default(0)
+  createdById String?
+  createdAt   DateTime          @default(now())
+  sentAt      DateTime?
+
+  @@index([status, createdAt])
+  @@index([contactId])
+}
+
+/// قالب پیام آماده (عمدتاً واتساپ). جای‌گیرها: {{name}} {{city}} {{product}} {{price}}
+model MarketTemplate {
+  id        String         @id @default(cuid())
+  title     String
+  language  String         @default("AR") // AR | KU | EN | FA
+  channel   MarketChannel  @default(WHATSAPP)
+  body      String
+  productId String?
+  product   MarketProduct? @relation(fields: [productId], references: [id])
+  sortOrder Int            @default(0)
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  files MarketTemplateFile[]
+}
+
+/// عکس/کاتالوگ/ویدیوی همراهِ یک قالب پیام.
+///
+/// لینک `wa.me` نمی‌تواند فایل پیوست کند — پروتکلش فقط `?text=` دارد. پس فایل
+/// این‌جا نگهداری می‌شود و موقع ارسال سه راه پیش روی کاربر است: کپی تصویر در
+/// کلیپ‌بورد (برای Paste در واتساپ‌وب)، دانلود برای پیوست دستی، یا افزودن
+/// نشانی عمومی فایل به متن پیام.
+model MarketTemplateFile {
+  id           String         @id @default(cuid())
+  templateId   String
+  template     MarketTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  url          String
+  originalName String
+  size         Int?
+  mime         String?
+  sortOrder    Int            @default(0)
+  uploadedById String?
+  createdAt    DateTime       @default(now())
+
+  @@index([templateId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// هستهٔ جدید دفترداری — docs/LEDGER_SCHEMA.md
+//
+// پیشوند Gl تا با FinancialAccount / JournalEntry قدیمی برخورد نکند.
+// هستهٔ قدیمی تا پایان فاز ۹ موازی کار می‌کند.
+//
+// مبالغ همه BigInt و به **کوچک‌ترین واحد ارز** (ریال، سنت، فِن) — هرگز float.
+// ═══════════════════════════════════════════════════════════════════════
+
+enum GlRootType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum GlSide {
+  DEBIT
+  CREDIT
+}
+
+enum GlStatement {
+  BALANCE_SHEET
+  INCOME_STATEMENT
+}
+
+enum GlCurrencyMode {
+  SINGLE
+  MULTI
+}
+
+enum GlSubsidiaryKind {
+  CUSTOMER
+  PRODUCER
+  SUPPLIER
+  CARRIER
+  EXCHANGE
+  AGENT
+  EMPLOYEE
+  PETTY_CASH_HOLDER
+  BANK
+  OTHER
+}
+
+/// نوع شخص در گزارش فصلی ماده ۱۶۹ — همان طبقه‌بندیِ فرم سازمان امور مالیاتی
+enum GlTaxPersonType {
+  LEGAL /// شخص حقوقی — شناسهٔ ملیِ ۱۱ رقمی
+  NATURAL /// شخص حقیقی — کد ملیِ ۱۰ رقمی
+  PARTNERSHIP /// مشارکت مدنی
+  FOREIGN /// اتباع خارجی
+  CONSUMER /// مصرف‌کنندهٔ نهایی — بدون شناسه، در گزارش تجمیع می‌شود
+}
+
+enum GlEntryType {
+  OPENING
+  NORMAL
+  ADJUSTING
+  CLOSING
+  REVERSING
+}
+
+enum GlEntryStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
+/// ارز — داده‌محور، نه enum. افزودن ارز جدید بدون تغییر کد.
+model GlCurrency {
+  code          String  @id
+  name          String
+  symbol        String
+  /// ریال ۰ ، دلار/یوآن/درهم ۲ — بدون این، عدد صحیحِ ذخیره‌شده بی‌معناست
+  decimalPlaces Int     @default(2)
+  isBase        Boolean @default(false)
+  isActive      Boolean @default(true)
+  sortIndex     Int     @default(0)
+
+  accounts GlAccount[]
+  lines    GlLine[]
+  documents GlDocument[]
+}
+
+/// مرجع تاریخی نرخ. نرخِ به‌کاررفته همیشه روی خود ردیف snapshot می‌شود.
+model GlExchangeRate {
+  id     String   @id @default(cuid())
+  from   String
+  to     String
+  rate   Decimal  @db.Decimal(24, 10)
+  date   DateTime @db.Date
+  source String   @default("MANUAL")
+
+  @@unique([from, to, date, source])
+  @@index([from, to, date])
+}
+
+/// طول کد هر سطح — هیچ عدد سطحی در کد هاردکد نمی‌شود
+model GlCodeLevel {
+  level  Int    @id
+  name   String
+  digits Int
+}
+
+model GlAccount {
+  id       String      @id @default(cuid())
+  code     String      @unique
+  name     String
+  level    Int
+  parentId String?
+  parent   GlAccount?  @relation("GlTree", fields: [parentId], references: [id])
+  children GlAccount[] @relation("GlTree")
+
+  rootType   GlRootType
+  normalSide GlSide
+  statement  GlStatement
+
+  /// فقط برگ‌ها سند می‌گیرند
+  isPostable   Boolean        @default(false)
+  currencyMode GlCurrencyMode @default(MULTI)
+  currencyCode String?
+  currency     GlCurrency?    @relation(fields: [currencyCode], references: [code])
+
+  requiresSubsidiary Boolean            @default(false)
+  subsidiaryKinds    GlSubsidiaryKind[] @default([])
+  requiresCostCenter Boolean            @default(false)
+
+  /// ترتیب نقدشوندگی
+  sortIndex Int     @default(0)
+  /// حساب رزروشدهٔ سیستمی — حذف‌ناپذیر
+  isSystem  Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  lines   GlLine[]
+  budgets GlBudget[]
+
+  documentLines GlDocumentLine[]
+
+  @@index([parentId])
+  @@index([rootType, sortIndex])
+  @@index([isPostable])
+}
+
+/// تفصیلی شناور — بُعدی مستقل، در درخت کدینگ تکثیر نمی‌شود
+model GlSubsidiary {
+  id       String           @id @default(cuid())
+  code     String           @unique
+  name     String
+  kind     GlSubsidiaryKind
+  /// نام مدل کسب‌وکار، مثلاً "Customer" — یک منبع حقیقت، بدون تکثیر داده
+  refType  String?
+  refId    String?
+  isActive Boolean          @default(true)
+
+  // ── هویت مالیاتی (ماده ۱۶۹ و اظهارنامهٔ ارزش افزوده) ──
+  //
+  // چرا اینجا و نه روی `Customer`/`Vendor`: گزارش فصلی همهٔ طرف‌حساب‌ها را با
+  // هم می‌خواهد — مشتری، تأمین‌کننده، حمل‌کننده، صرافی. `GlSubsidiary` تنها
+  // جایی است که هر چهارتا وجود دارند؛ گذاشتنش روی مدل‌های کسب‌وکار یعنی چهار
+  // بار تعریف کردن و چهار بار همگام نگه داشتن.
+  taxPersonType GlTaxPersonType?
+  /// شناسهٔ ملیِ ۱۱ رقمی (حقوقی) یا کد ملیِ ۱۰ رقمی (حقیقی)
+  nationalId    String?
+  /// کد اقتصادیِ ۱۲ رقمی
+  economicCode  String?
+  taxAddress    String?
+  postalCode    String?
+
+  lines         GlLine[]
+  cheques       GlCheque[]
+  pettyCashFund GlPettyCashFund? @relation("PettyCashHolder")
+  employee      GlEmployee?      @relation("EmployeeSubsidiary")
+
+  documents GlDocument[]
+
+  @@unique([refType, refId])
+  @@index([kind, isActive])
+}
+
+/// مرکز هزینه — بُعدی عمود بر کدینگ
+model GlCostCenter {
+  id         String         @id @default(cuid())
+  code       String         @unique
+  name       String
+  parentId   String?
+  parent     GlCostCenter?  @relation("CcTree", fields: [parentId], references: [id])
+  children   GlCostCenter[] @relation("CcTree")
+  isPostable Boolean        @default(true)
+  isActive   Boolean        @default(true)
+
+  lines       GlLine[]
+  GlEmployee  GlEmployee[]
+  budgets     GlBudget[]
+  fixedAssets GlFixedAsset[]
+  documents     GlDocument[]
+  documentLines GlDocumentLine[]
+
+  @@index([parentId])
+}
+
+model GlFiscalYear {
+  id        String    @id @default(cuid())
+  title     String    @unique
+  startDate DateTime  @db.Date
+  endDate   DateTime  @db.Date
+  closedAt  DateTime?
+
+  entries GlEntry[]
+  counter GlSerialCounter?
+  budgets GlBudget[]
+}
+
+/// بودجهٔ یک حساب در یک سال مالی (ممیزی سوم — ب۲)
+///
+/// **چرا در سطح (سال مالی × حساب × مرکز هزینه):** بودجه همان ابعادی را می‌خواهد
+/// که گزارش عملکرد دارد، وگرنه «بودجه در برابر عملکرد» قابل کنار هم گذاشتن
+/// نیست. مرکز هزینه اختیاری است — بودجهٔ بدون مرکز یعنی بودجهٔ کلِ آن حساب.
+///
+/// **چرا دوازده ستون ماهانه و نه یک عدد سالانه:** هزینهٔ اجاره یکنواخت است ولی
+/// بازاریابی و عیدی نیستند. با عدد سالانه، انحرافِ فروردین همیشه مثبت و
+/// انحرافِ اسفند همیشه منفی درمی‌آید و گزارش بی‌معنی می‌شود.
+///
+/// مبالغ مثل بقیهٔ هسته `BigInt` در کوچک‌ترین واحد ارز پایه‌اند.
+model GlBudget {
+  id           String  @id @default(cuid())
+  fiscalYearId String
+  accountId    String
+  costCenterId String?
+
+  /// ۱۲ عدد به ترتیب ماه‌های شمسی، فروردین تا اسفند
+  months BigInt[]
+  note   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  fiscalYear GlFiscalYear  @relation(fields: [fiscalYearId], references: [id], onDelete: Cascade)
+  account    GlAccount     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  costCenter GlCostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  /// یکتاییِ (سال × حساب × مرکز) با **ایندکس جزئی** در SQL دستی اجبار می‌شود، نه
+  /// اینجا: پستگرس NULL را در ایندکس یکتا متمایز می‌شمارد، پس یک `@@unique`
+  /// معمولی برای ردیف‌های بدون مرکز هزینه هیچ چیزی را نمی‌گیرد.
+  @@index([fiscalYearId, accountId, costCenterId])
+  @@index([fiscalYearId])
+  @@index([accountId])
+}
+
+/// شمارندهٔ سریال — تراکنشی، پس rollback شماره را هم برمی‌گرداند (بدون شکاف)
+model GlSerialCounter {
+  fiscalYearId String       @id
+  fiscalYear   GlFiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Cascade)
+  next         Int          @default(1)
+}
+
+model GlPeriodLock {
+  id         String   @id @default(cuid())
+  module     String   @default("ALL")
+  lockToDate DateTime @db.Date
+  reason     String
+  createdAt  DateTime @default(now())
+
+  @@index([module, lockToDate])
+}
+
+model GlEntry {
+  id           String        @id @default(cuid())
+  fiscalYearId String
+  fiscalYear   GlFiscalYear  @relation(fields: [fiscalYearId], references: [id])
+  /// null تا وقتی DRAFT است — سریال فقط در لحظهٔ POSTED گرفته می‌شود
+  serial       Int?
+  date         DateTime      @db.Date
+  description  String
+  entryType    GlEntryType   @default(NORMAL)
+  status       GlEntryStatus @default(DRAFT)
+
+  sourceType String?
+  sourceId   String?
+
+  reversesId     String?  @unique
+  reverses       GlEntry? @relation("GlRev", fields: [reversesId], references: [id])
+  reversedBy     GlEntry? @relation("GlRev")
+  reversalReason String?
+
+  postedAt       DateTime?
+  postedById     String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  /// ⚠️ منسوخ — جای خود را به `attachments` داده (بند ۳۰). برای اسناد
+  /// موجود نگه داشته می‌شود تا نشانی‌های قبلی گم نشوند.
+  attachmentUrls String[]  @default([])
+  attachments    GlAttachment[]
+  document       GlDocument?
+
+  lines             GlLine[]
+  chequeTransitions GlChequeTransition[]
+  payrollRun        GlPayrollRun?
+
+  @@unique([fiscalYearId, serial])
+  @@index([date, serial])
+  @@index([sourceType, sourceId])
+  @@index([status])
+}
+
+model GlLine {
+  id      String  @id @default(cuid())
+  entryId String
+  entry   GlEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  lineNo  Int
+
+  accountId    String
+  account      GlAccount     @relation(fields: [accountId], references: [id])
+  subsidiaryId String?
+  subsidiary   GlSubsidiary? @relation(fields: [subsidiaryId], references: [id])
+  costCenterId String?
+  costCenter   GlCostCenter? @relation(fields: [costCenterId], references: [id])
+  /// بُعد پروژه — بند ۲۸ و ۱۰ spec
+  ///
+  /// ⚠️ پیش از این، پروژه به‌شکل یک **مرکز هزینهٔ سایه** با کد `9.<کد پروژه>`
+  /// ساخته می‌شد. یعنی برای بستن هزینه به پروژه، تنها خانهٔ مرکز هزینه خرج
+  /// می‌شد و دیگر نمی‌شد گفت همان هزینه مالِ کدام واحد سازمانی بوده — در
+  /// حالی که بند ۱۰ می‌گوید «یک هزینه می‌تواند هم پروژه داشته باشد هم
+  /// مرکز هزینه». حالا دو خانهٔ مستقل‌اند.
+  projectId    String?
+  project      Project?      @relation(fields: [projectId], references: [id])
+
+  // ── قاعدهٔ ۵: هر سه مقدار ذخیره می‌شوند ──
+  currencyCode String
+  currency     GlCurrency @relation(fields: [currencyCode], references: [code])
+  /// کوچک‌ترین واحدِ ارز اصلی
+  debit        BigInt     @default(0)
+  credit       BigInt     @default(0)
+  /// واحد پایه (اصلی) به‌ازای یک واحد ارز (اصلی) — snapshot لحظهٔ ثبت
+  rate         Decimal    @db.Decimal(24, 10)
+  /// کوچک‌ترین واحدِ ارز پایه
+  debitBase    BigInt     @default(0)
+  creditBase   BigInt     @default(0)
+
+  memo String?
+
+  /// تخصیص‌هایی که این ردیف در آن‌ها **تعهد** است (فاکتور)
+  allocationsAsObligation GlAllocation[] @relation("AllocObligation")
+  /// تخصیص‌هایی که این ردیف در آن‌ها **تسویه** است (دریافت/پرداخت)
+  allocationsAsSettlement GlAllocation[] @relation("AllocSettlement")
+
+  @@unique([entryId, lineNo])
+  @@index([accountId])
+  @@index([subsidiaryId])
+  @@index([costCenterId])
+  @@index([projectId])
+}
+
+/// یادداشت توضیحیِ انسانی روی صورت‌های مالی (مرحلهٔ ۵ ب)
+///
+/// **چرا کنارِ یادداشت‌های محاسبه‌شده و نه به‌جایشان:** ریزِ «موجودی نقد» را
+/// باید سیستم بسازد تا همیشه با صورت مالی بخواند. ولی «بدهی احتمالی بابت
+/// پروندهٔ حقوقی» و «معاملات با اشخاص وابسته» را هیچ کوئری‌ای نمی‌داند —
+/// آن‌ها را باید آدم بنویسد.
+///
+/// `noteKey` به یکی از یادداشت‌های محاسبه‌شده می‌چسبد، یا `null` است و
+/// یادداشتِ مستقل می‌شود (بدهی احتمالی، رویدادهای پس از تاریخ ترازنامه…).
+model GlDisclosureNote {
+  id String @id @default(cuid())
+
+  /// کلید یادداشت محاسبه‌شده‌ای که این متن ذیلش می‌نشیند؛ `null` = یادداشت مستقل
+  noteKey String?
+  title   String
+  body    String
+
+  /// ترتیب نمایش میان یادداشت‌های مستقل
+  sortIndex Int @default(0)
+
+  /// از این تاریخ به بعد در صورت‌های مالی می‌آید؛ `null` = همیشه
+  validFrom DateTime? @db.Date
+  validTo   DateTime? @db.Date
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+
+  @@index([noteKey])
+}
+
+/// روش استهلاک — فعلاً فقط خط مستقیم (مرحلهٔ ۴ ه)
+enum GlDepreciationMethod {
+  STRAIGHT_LINE
+}
+
+/// دارایی ثابت و برنامهٔ استهلاکش (مرحلهٔ ۴ ه)
+///
+/// **چرا مدل جدا و نه محاسبه از روی دفتر:** بهای تمام‌شده در ۱۲۰۱ هست، ولی
+/// عمر مفید، تاریخ بهره‌برداری و ارزش اسقاط هیچ‌کدام در سند حسابداری جایی
+/// ندارند. بدون آن‌ها استهلاک قابل محاسبه نیست — و پیش از این ماژول، کسی
+/// باید هر ماه دستی حساب می‌کرد.
+///
+/// مبالغ مثل بقیهٔ هسته `BigInt` در کوچک‌ترین واحد ارز پایه‌اند.
+model GlFixedAsset {
+  id   String @id @default(cuid())
+  code String @unique
+  name String
+
+  /// بهای تمام‌شده
+  cost             BigInt
+  /// ارزش اسقاط — از پایهٔ استهلاک کم می‌شود
+  salvage          BigInt   @default(0)
+  /// عمر مفید به **ماه**، چون استهلاک ماهانه ثبت می‌شود
+  usefulLifeMonths Int
+  /// تاریخ شروع بهره‌برداری — مبنای ماه اول
+  inServiceAt      DateTime
+
+  method GlDepreciationMethod @default(STRAIGHT_LINE)
+
+  /// مرکز هزینه‌ای که هزینهٔ استهلاک به آن می‌خورد
+  costCenterId String?
+  costCenter   GlCostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  /// کنارگذاری: پس از این تاریخ دیگر مستهلک نمی‌شود
+  disposedAt DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs GlDepreciationRun[]
+
+  @@index([disposedAt])
+}
+
+/// یک دورهٔ ثبت‌شدهٔ استهلاک برای یک دارایی
+///
+/// یکتاییِ (دارایی × دوره) جلوی ثبتِ دوبارهٔ استهلاکِ یک ماه را می‌گیرد — همان
+/// اشتباهی که در روشِ دستی رایج است و کسی متوجهش نمی‌شود چون مبلغ کوچک است.
+model GlDepreciationRun {
+  id      String       @id @default(cuid())
+  assetId String
+  asset   GlFixedAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  /// شمارهٔ ماهِ استهلاک از شروع بهره‌برداری، یک‌مبنا
+  periodNo   Int
+  /// تاریخی که سند با آن ثبت شده
+  periodDate DateTime
+  amount     BigInt
+
+  entryId   String?
+  createdAt DateTime @default(now())
+
+  @@unique([assetId, periodNo])
+  @@index([assetId])
+}
+
+/// تخصیص یک تسویه به یک تعهد — «کدام پرداخت، کدام فاکتور را بست» (مرحلهٔ ۴ ج)
+///
+/// **چرا لازم شد:** سن‌بندی تا امروز FIFO حدس می‌زد — هر دریافت، قدیمی‌ترین
+/// بدهیِ باز را می‌بست. برای شرکتی که مشتری‌اش فاکتور مشخصی را پرداخت می‌کند
+/// این غلط است: مشتری فاکتور خرداد را می‌دهد و سیستم فاکتور فروردین را
+/// می‌بندد، پس سن‌بندی و «قدیمی‌ترین بدهی» هر دو دروغ می‌گویند.
+///
+/// **چرا سطح ردیف و نه سند:** یک سند می‌تواند چند تعهد داشته باشد (فاکتور
+/// دو مشتری) و یک ردیف می‌تواند چند بار تسویه شود (پرداخت قسطی). فقط در سطح
+/// ردیف است که «چقدرش تسویه شده» عدد یکتایی دارد.
+///
+/// مبلغ به **ارز خودِ ردیف** است، نه ارز پایه: تخصیص یک واقعیتِ قراردادی است
+/// («این ۱۰۰ دلار بابت آن فاکتور ۱۰۰ دلاری»)، و نرخ تسعیر آن را عوض نمی‌کند.
+model GlAllocation {
+  id String @id @default(cuid())
+
+  /// ردیفِ فاکتور — بدهکارِ ۱۱۰۴ یا بستانکارِ ۲۱۰۱
+  obligationLineId String
+  obligationLine   GlLine @relation("AllocObligation", fields: [obligationLineId], references: [id], onDelete: Cascade)
+  /// ردیفِ دریافت/پرداخت — جهتِ مخالف روی همان معین و همان تفصیلی
+  settlementLineId String
+  settlementLine   GlLine @relation("AllocSettlement", fields: [settlementLineId], references: [id], onDelete: Cascade)
+
+  /// کوچک‌ترین واحدِ ارزِ همان دو ردیف؛ همیشه مثبت
+  amount       BigInt
+  currencyCode String
+
+  note        String?
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  /// یک تسویه دو بار به یک تعهد تخصیص نمی‌خورد — برای افزایش، همان ردیف ویرایش می‌شود
+  @@unique([obligationLineId, settlementLineId])
+  @@index([obligationLineId])
+  @@index([settlementLineId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// فاز ۷ — چک و تنخواه‌گردان (docs/ACCOUNTING_SPEC.md بند ۳-۵)
+// ═══════════════════════════════════════════════════════════════════════
+
+enum GlChequeDirection {
+  RECEIVED
+  ISSUED
+}
+
+enum GlChequeStatus {
+  // ── دریافتی ──
+  IN_HAND // نزد صندوق
+  IN_COLLECTION // در جریان وصول
+  COLLECTED // وصول‌شده
+  ENDORSED // خرج‌شده (به شخص ثالث)
+  PLEDGED // نزد بانک به‌عنوان وثیقه
+  RETURNED // برگشتی و به صادرکننده پس داده شد؛ بدهی به حساب دریافتنی برگشت (ممیزی ب۱۰)
+  // ── پرداختی ──
+  ISSUED // صادرشده
+  CLEARED // پاس‌شده
+  VOIDED // باطل‌شده
+  // ── مشترک ──
+  BOUNCED // برگشتی
+}
+
+model GlCheque {
+  id           String            @id @default(cuid())
+  direction    GlChequeDirection
+  number       String
+  bankName     String
+  /// شناسهٔ صیاد
+  sayadId      String?
+  amount       BigInt
+  currencyCode String
+  /// تاریخ صدور — جدا از سررسید نگه داشته می‌شود (الزام بند ۳-۵)
+  issueDate    DateTime          @db.Date
+  dueDate      DateTime          @db.Date
+  /// طرف‌حساب چک: کسی که داده (دریافتی) یا کسی که به او داده‌ایم (پرداختی)
+  subsidiaryId String?
+  subsidiary   GlSubsidiary?     @relation(fields: [subsidiaryId], references: [id])
+  status       GlChequeStatus
+  note         String?
+  createdAt    DateTime          @default(now())
+
+  transitions GlChequeTransition[]
+
+  @@unique([direction, number, bankName])
+  @@index([status, dueDate])
+  @@index([subsidiaryId])
+}
+
+model GlChequeTransition {
+  id        String          @id @default(cuid())
+  chequeId  String
+  cheque    GlCheque        @relation(fields: [chequeId], references: [id], onDelete: Cascade)
+  fromState GlChequeStatus?
+  toState   GlChequeStatus
+  /// ⚠️ اجباری: بند ۳-۵ می‌گوید «هر انتقال وضعیت سند می‌زند».
+  /// اجباری‌بودن این ستون، آن قاعده را در schema می‌بندد نه در کد.
+  entryId   String
+  entry     GlEntry         @relation(fields: [entryId], references: [id])
+  at        DateTime        @default(now())
+  byId      String?
+
+  @@index([chequeId, at])
+}
+
+/// صندوق تنخواه با مبلغ ثابت (مدل imprest)
+model GlPettyCashFund {
+  id           String       @id @default(cuid())
+  name         String
+  /// تنخواه‌دار — تفصیلی شناور
+  subsidiaryId String       @unique
+  subsidiary   GlSubsidiary @relation("PettyCashHolder", fields: [subsidiaryId], references: [id])
+  currencyCode String
+  /// سقف ثابت صندوق؛ شارژ مجدد همیشه تا همین عدد برمی‌گرداند
+  floatAmount  BigInt
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// فاز ۸ — حقوق و دستمزد (docs/ACCOUNTING_SPEC.md بند ۳-۶)
+//
+// قاعدهٔ حاکم: **هیچ نرخ قانونی در کد هاردکد نمی‌شود.** همه در جدول‌های
+// نسخه‌دار با بازهٔ اعتبار می‌نشینند و محاسبهٔ هر دوره با نرخ معتبر **همان
+// دوره** انجام می‌شود — نه نرخ جاری. بدون این، بازمحاسبهٔ ماه‌های گذشته
+// نتیجهٔ متفاوت می‌دهد و اصلاح لیست قدیمی غیرممکن می‌شود.
+// ═══════════════════════════════════════════════════════════════════════
+
+enum GlPayrollStatus {
+  DRAFT
+  FINAL
+  AMENDED
+}
+
+/// نرخ قانونی نسخه‌دار — مثل حداقل دستمزد، نرخ بیمه، حق مسکن
+model GlPayrollRate {
+  id        String    @id @default(cuid())
+  key       String
+  value     Decimal   @db.Decimal(18, 6)
+  validFrom DateTime  @db.Date
+  validTo   DateTime? @db.Date
+  note      String?
+
+  @@index([key, validFrom])
+}
+
+/// پلکان مالیات حقوق — چند ردیف به‌ازای هر بازهٔ اعتبار
+model GlPayrollTaxBracket {
+  id         String    @id @default(cuid())
+  /// کف بازه (شامل)، به کوچک‌ترین واحد ارز پایه
+  fromAmount BigInt
+  /// سقف بازه (شامل)؛ null یعنی بی‌نهایت
+  toAmount   BigInt?
+  rate       Decimal   @db.Decimal(9, 6)
+  validFrom  DateTime  @db.Date
+  validTo    DateTime? @db.Date
+
+  @@index([validFrom, fromAmount])
+}
+
+model GlEmployee {
+  id            String        @id @default(cuid())
+  code          String        @unique
+  /// کارمند یک **تفصیلی شناور** است، نه گره کدینگ (الزام بند ۳-۶)
+  subsidiaryId  String        @unique
+  subsidiary    GlSubsidiary  @relation("EmployeeSubsidiary", fields: [subsidiaryId], references: [id])
+  name          String
+  nationalId    String?
+  insuranceNo   String?
+  hireDate      DateTime      @db.Date
+  endDate       DateTime?     @db.Date
+  /// حقوق پایهٔ ماهانه به کوچک‌ترین واحد ارز پایه
+  baseSalary    BigInt
+  childrenCount Int           @default(0)
+  isMarried     Boolean       @default(false)
+  /// مرکز هزینهٔ پیش‌فرض؛ هر ردیف هزینهٔ حقوق مرکز می‌گیرد (الزام بند ۳-۶)
+  costCenterId  String?
+  costCenter    GlCostCenter? @relation(fields: [costCenterId], references: [id])
+  isActive      Boolean       @default(true)
+
+  items GlPayrollItem[]
+}
+
+model GlPayrollRun {
+  id          String          @id @default(cuid())
+  /// سال و ماه شمسی
+  year        Int
+  month       Int
+  status      GlPayrollStatus @default(DRAFT)
+  /// سندی که آداپتور از این لیست ساخته
+  entryId     String?         @unique
+  entry       GlEntry?        @relation(fields: [entryId], references: [id])
+  /// لیست اصلاحی، لیست قبلی را ارجاع می‌دهد
+  amendsId    String?         @unique
+  amends      GlPayrollRun?   @relation("RunAmendment", fields: [amendsId], references: [id])
+  amendedBy   GlPayrollRun?   @relation("RunAmendment")
+  note        String?
+  finalizedAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  items GlPayrollItem[]
+
+  @@unique([year, month, amendsId])
+}
+
+/// یک ردیف لیست حقوق — همهٔ مبالغ به کوچک‌ترین واحد ارز پایه
+model GlPayrollItem {
+  id         String       @id @default(cuid())
+  runId      String
+  run        GlPayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   GlEmployee   @relation(fields: [employeeId], references: [id])
+
+  // ── ورودی‌ها ──
+  workedDays    Int     @default(30)
+  overtimeHours Decimal @default(0) @db.Decimal(9, 2)
+  nightHours    Decimal @default(0) @db.Decimal(9, 2)
+  holidayHours  Decimal @default(0) @db.Decimal(9, 2)
+
+  // ── مزایا ──
+  baseSalary       BigInt @default(0)
+  seniorityPay     BigInt @default(0)
+  housingAllowance BigInt @default(0)
+  foodAllowance    BigInt @default(0)
+  childAllowance   BigInt @default(0)
+  overtimePay      BigInt @default(0)
+  nightPay         BigInt @default(0)
+  holidayPay       BigInt @default(0)
+  grossPay         BigInt @default(0)
+
+  // ── کسورات ──
+  insuranceEmployee BigInt @default(0)
+  incomeTax         BigInt @default(0)
+  loanDeduction     BigInt @default(0)
+  advanceDeduction  BigInt @default(0)
+  otherDeduction    BigInt @default(0)
+  netPay            BigInt @default(0)
+
+  // ── سهم کارفرما (هزینهٔ شرکت، نه کسر از کارمند) ──
+  insuranceEmployer BigInt @default(0)
+  unemploymentDue   BigInt @default(0)
+
+  // ── ذخیره‌های ماهانه (الزام بند ۳-۶) ──
+  accrualBonus     BigInt @default(0)
+  accrualSeverance BigInt @default(0)
+  accrualLeave     BigInt @default(0)
+
+  @@unique([runId, employeeId])
+}
+
+/// ممیزی ج۱۶ — ردِ پای عملیاتِ دفترداری. فقط append؛ هیچ مسیری update/delete ندارد.
+/// جدا از `AuditLog` قدیمی چون آن به enum و entityهای هستهٔ قدیمی بند است.
+model GlAuditLog {
+  id          String   @id @default(cuid())
+  at          DateTime @default(now())
+  /// کاربرِ انجام‌دهنده — بدونِ FK تا حذفِ کاربر ردِ پا را نبرد
+  actorId     String?
+  actorName   String?
+  /// POST | REVERSE | DRAFT_CREATE | DRAFT_UPDATE | DRAFT_DISCARD | DRAFT_POST
+  /// | YEAR_CLOSE | YEAR_REOPEN | PROVISION_PAY | RATE_SET | PERIOD_LOCK | PERIOD_UNLOCK
+  action      String
+  entryId     String?
+  entrySerial Int?
+  /// خطِ خوانا برای فهرست
+  summary     String
+  /// جزئیاتِ ساختاریافته (مبلغ، حساب‌ها، دلیلِ ابطال، …)
+  meta        Json?
+
+  /// موجودیتِ هدف وقتی سند نیست — مدرک، حساب، نرخ، طرف‌حساب (بند ۲۹)
+  entity   String?
+  entityId String?
+  /// مقدار پیش و پس از تغییر — بند ۲۹ صریحاً می‌خواهدشان
+  oldValue Json?
+  newValue Json?
+
+  @@index([at])
+  @@index([entryId])
+  @@index([action])
+  @@index([entity, entityId])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// مدرک، پیوست و فاکتور دستی — انطباق با ALIP CORE SPEC v0.1
+//
+// چهار بندِ spec با **یک** طراحی پوشش داده می‌شوند، چون در عمل یک چیزند:
+//   بند ۱۱ مدرک · بند ۳۰ پیوست · بند ۲۶/۲۷ فاکتور خرید و فروش · بند ۳-۷ وضعیت
+//
+// ⚠️ چرا مدرکِ تازه، در کنارِ `Invoice` موجود و نه به‌جایش:
+// `Invoice` فعلی **الزاماً** به پروژه (`projectId` اجباری) و به قطعه
+// (`InvoiceItem.partId`) بند است — یعنی فاکتورِ پروژه‌های ساخت. اما شرکت
+// خدمات دیگری هم می‌فروشد که نه پروژه دارند نه قطعه. آن فاکتورها امروز
+// فقط با سند دستی ثبت می‌شوند، بدون مدرک و بدون ردِ پا.
+//
+// پس: ماژول «صدور فاکتور» دست‌نخورده می‌ماند و این، مسیرِ **دوم** است.
+// ═══════════════════════════════════════════════════════════════
+
+/// نوع مدرک — داده‌محور نگه داشته نشده چون گردش هر کدام در کد متفاوت است
+enum GlDocumentKind {
+  SALES_INVOICE      // فاکتور فروش (خدمات)
+  PURCHASE_INVOICE   // فاکتور خرید
+  SALES_RETURN       // برگشت از فروش
+  PURCHASE_RETURN    // برگشت از خرید
+  RECEIPT_VOUCHER    // فیش/رسید دریافت
+  PAYMENT_VOUCHER    // فیش/رسید پرداخت
+  OTHER              // هر مدرک دیگر — قرارداد، صورتجلسه، نامه
+}
+
+/// چرخهٔ وضعیت مدرک — بند ۳-۷ spec
+///
+/// `POSTED` یعنی سند حسابداری‌اش خورده. `CANCELLED` با `REVERSED` فرق دارد:
+/// ابطالِ مدرکِ **ثبت‌نشده** است، پس اثر مالی‌ای نبوده که برگردد.
+enum GlDocumentStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  POSTED
+  CANCELLED
+}
+
+model GlDocument {
+  id     String           @id @default(cuid())
+  kind   GlDocumentKind
+  status GlDocumentStatus @default(DRAFT)
+
+  /// شمارهٔ مدرک — یکتا در هر نوع، از شمارندهٔ متمرکز
+  number String
+  date   DateTime
+  /// سررسید پرداخت (فاکتور)
+  dueDate DateTime?
+
+  /// طرف‌حساب — همان تفصیلی دفتر، نه یک هویت موازی (بند ۳۲)
+  subsidiaryId String?
+  subsidiary   GlSubsidiary? @relation(fields: [subsidiaryId], references: [id])
+
+  /// بُعد پروژه — اختیاری، چون خدمات بی‌پروژه هم داریم
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  costCenterId String?
+  costCenter   GlCostCenter? @relation(fields: [costCenterId], references: [id])
+
+  currencyCode String
+  currency     GlCurrency @relation(fields: [currencyCode], references: [code])
+  /// نرخ به ارز پایه در لحظهٔ ثبت — مثل ردیف سند، snapshot می‌شود
+  rate         Decimal    @db.Decimal(24, 10)
+
+  /// جمع خطوط، پیش از مالیات — کوچک‌ترین واحدِ ارز مدرک
+  subtotal  BigInt @default(0)
+  vatAmount BigInt @default(0)
+  total     BigInt @default(0)
+
+  description String?
+  notes       String?
+
+  /// مدرکی که این یکی برگشتِ آن است (برگشت از خرید/فروش)
+  reversesDocumentId String?      @unique
+  reversesDocument   GlDocument?  @relation("DocReturn", fields: [reversesDocumentId], references: [id])
+  returnDocument     GlDocument?  @relation("DocReturn")
+
+  /// سند حسابداریِ ساخته‌شده هنگام ثبت
+  entryId String?  @unique
+  entry   GlEntry? @relation(fields: [entryId], references: [id])
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  approvedById String?
+  postedAt    DateTime?
+  cancelledAt DateTime?
+  cancelReason String?
+
+  lines        GlDocumentLine[]
+  attachments  GlAttachment[]
+  transitions  GlDocumentTransition[]
+
+  @@unique([kind, number])
+  @@index([status])
+  @@index([subsidiaryId])
+  @@index([projectId])
+  @@index([date])
+}
+
+/// خط مدرک — برای شرکت خدماتی، «شرح» کافی است و کالا لازم نیست
+model GlDocumentLine {
+  id         String     @id @default(cuid())
+  documentId String
+  document   GlDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  lineNo     Int
+
+  description String
+  /// مقدار و فی — اختیاری‌اند؛ خدمت اغلب فقط مبلغ دارد
+  quantity  Decimal? @db.Decimal(18, 4)
+  unitPrice BigInt?
+  /// مبلغ خط به ارز مدرک، کوچک‌ترین واحد
+  amount    BigInt
+
+  /// حساب درآمد/هزینه‌ای که این خط می‌خورد
+  accountId String
+  account   GlAccount @relation(fields: [accountId], references: [id])
+
+  /// ابعاد در سطح خط — یک فاکتور می‌تواند چند پروژه را پوشش دهد
+  projectId    String?
+  project      Project?      @relation(fields: [projectId], references: [id])
+  costCenterId String?
+  costCenter   GlCostCenter? @relation(fields: [costCenterId], references: [id])
+
+  @@unique([documentId, lineNo])
+  @@index([accountId])
+  @@index([projectId])
+}
+
+/// تاریخچهٔ وضعیت مدرک — بند ۳-۶: تاریخچهٔ وضعیت با ردِ پا فرق دارد
+model GlDocumentTransition {
+  id         String           @id @default(cuid())
+  documentId String
+  document   GlDocument       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  fromState  GlDocumentStatus?
+  toState    GlDocumentStatus
+  at         DateTime         @default(now())
+  byId       String?
+  byName     String?
+  note       String?
+
+  @@index([documentId])
+}
+
+/// پیوست — بند ۳۰
+///
+/// ⚠️ جایگزینِ `attachmentUrls: String[]` روی سند. آن آرایه فقط نشانی بود:
+/// نه نام فایل، نه نوع، نه چه کسی و کِی گذاشته. در دفاع از سند در ممیزی
+/// مالیاتی، همین‌ها لازم است.
+///
+/// یک پیوست یا به مدرک می‌چسبد یا مستقیم به سند حسابداری (سند دستی).
+model GlAttachment {
+  id String @id @default(cuid())
+
+  documentId String?
+  document   GlDocument? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  entryId    String?
+  entry      GlEntry?    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  /// نشانیِ فایل روی همان مسیر uploads موجود
+  url      String
+  fileName String
+  mimeType String?
+  sizeBytes Int?
+  /// «فیش واریز» · «قرارداد» · «صورتجلسه» — برچسبِ آزاد برای دسته‌بندی
+  label    String?
+
+  uploadedById String?
+  uploadedByName String?
+  uploadedAt   DateTime @default(now())
+
+  @@index([documentId])
+  @@index([entryId])
+}
