@@ -196,7 +196,7 @@ export default function ProjectDetailPage() {
                 <th>نام {itemWord}</th>
                 <th>تعداد</th>
                 <th>وزن (گرم)</th>
-                <th>{isTrading ? 'برند / مدل' : 'جنس / پوشش'}</th>
+                <th>{isTrading ? 'واحد / رنگ' : 'جنس / پوشش'}</th>
                 <th>قیمت تارگت</th>
                 <th>{isTrading ? 'تأیید مشخصات' : 'وضعیت فنی'}</th>
                 <th>مرحله</th>
@@ -236,7 +236,7 @@ export default function ProjectDetailPage() {
                     <td>{part.weightGrams || '-'}</td>
                     <td style={{ fontSize: 12 }}>
                       {isTrading
-                        ? `${part.brand || '-'} / ${part.partModel || '-'}`
+                        ? `${part.unit || '-'} / ${part.color || '-'}`
                         : `${part.material?.name || '-'} / ${part.coating?.name || '-'}`}
                     </td>
                     <td>
@@ -972,14 +972,9 @@ function PartModal({ projectId, projectType, part, onClose, onSuccess }: any) {
   // ۱.۳ — هر نقشه/عکس در یک باکس تک‌فایل جدا؛ دکمهٔ «افزودن» باکس جدید می‌سازد
   const [drawings, setDrawings] = useState<(File | null)[]>([null])
   // ─── فیلدهای کالای آماده (TRADING) ───
-  const [brand, setBrand] = useState(part?.brand || '')
-  const [partModel, setPartModel] = useState(part?.partModel || '')
   const [unit, setUnit] = useState(part?.unit || '')
   const [dimensions, setDimensions] = useState(part?.dimensions || '')
   const [color, setColor] = useState(part?.color || '')
-  const [declaredValue, setDeclaredValue] = useState(part?.declaredValue || '')
-  const [declaredCurrency, setDeclaredCurrency] = useState(part?.declaredCurrency || 'USD')
-  const [hsCode, setHsCode] = useState(part?.hsCode || '')
   const [description, setDescription] = useState(part?.description || '')
   const [productLinks, setProductLinks] = useState<string[]>(
     Array.isArray(part?.productLinks) && part.productLinks.length ? part.productLinks : [''],
@@ -995,7 +990,7 @@ function PartModal({ projectId, projectType, part, onClose, onSuccess }: any) {
       const cleanLinks = productLinks.map((l) => l.trim()).filter(Boolean)
       // فیلدهای مشترک/کالا برای create و patch
       const commodity = isTrading
-        ? { brand, partModel, unit, dimensions, color, declaredValue, declaredCurrency, hsCode, description, productLinks: JSON.stringify(cleanLinks) }
+        ? { unit, dimensions, color, description, productLinks: JSON.stringify(cleanLinks) }
         : {}
       if (isEdit) {
         await api.patch(`/projects/${projectId}/parts/${part.id}`, {
@@ -1020,13 +1015,9 @@ function PartModal({ projectId, projectType, part, onClose, onSuccess }: any) {
       if (!isTrading && coatingId) fd.append('coatingId', coatingId)
       if (targetAmount) { fd.append('targetAmount', String(targetAmount)); fd.append('targetCurrency', targetCurrency) }
       if (isTrading) {
-        if (brand) fd.append('brand', brand)
-        if (partModel) fd.append('partModel', partModel)
         if (unit) fd.append('unit', unit)
         if (dimensions) fd.append('dimensions', dimensions)
         if (color) fd.append('color', color)
-        if (declaredValue) { fd.append('declaredValue', String(declaredValue)); fd.append('declaredCurrency', declaredCurrency) }
-        if (hsCode) fd.append('hsCode', hsCode)
         if (description) fd.append('description', description)
         if (cleanLinks.length) fd.append('productLinks', JSON.stringify(cleanLinks))
       }
@@ -1064,16 +1055,6 @@ function PartModal({ projectId, projectType, part, onClose, onSuccess }: any) {
             <>
               <div className="grid-2">
                 <div className="form-group">
-                  <label>برند</label>
-                  <input value={brand} onChange={(e) => setBrand(e.target.value)} />
-                </div>
-                <div className="form-group">
-                  <label>مدل</label>
-                  <input value={partModel} onChange={(e) => setPartModel(e.target.value)} />
-                </div>
-              </div>
-              <div className="grid-2">
-                <div className="form-group">
                   <label>واحد شمارش</label>
                   <SearchableSelect value={unit} onChange={setUnit} placeholder="انتخاب..."
                     options={['عدد', 'کارتن', 'کیلوگرم', 'متر', 'جفت', 'بسته', 'رول'].map((u) => ({ value: u, label: u }))} />
@@ -1083,26 +1064,9 @@ function PartModal({ projectId, projectType, part, onClose, onSuccess }: any) {
                   <input value={dimensions} onChange={(e) => setDimensions(e.target.value)} placeholder="مثلاً ۲۰×۳۰×۱۰ سانتی‌متر" />
                 </div>
               </div>
-              <div className="grid-2">
-                <div className="form-group">
-                  <label>رنگ</label>
-                  <input value={color} onChange={(e) => setColor(e.target.value)} />
-                </div>
-                <div className="form-group">
-                  <label>کد تعرفه (HS) — اختیاری</label>
-                  <input value={hsCode} onChange={(e) => setHsCode(e.target.value)} />
-                </div>
-              </div>
               <div className="form-group">
-                <label>ارزش اظهاری واحد (برای گمرک)</label>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <NumberInput value={declaredValue} onChange={setDeclaredValue} placeholder="مبلغ" decimals style={{ flex: 1 }} />
-                  <select style={{ width: 120 }} value={declaredCurrency} onChange={(e) => setDeclaredCurrency(e.target.value)}>
-                    <option value="USD">دلار</option>
-                    <option value="CNY">یوآن</option>
-                    <option value="IRR">تومان</option>
-                  </select>
-                </div>
+                <label>رنگ</label>
+                <input value={color} onChange={(e) => setColor(e.target.value)} />
               </div>
               <div className="form-group">
                 <label>لینک‌های محصول / فروشنده</label>

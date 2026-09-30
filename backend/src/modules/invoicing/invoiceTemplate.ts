@@ -70,10 +70,10 @@ const BRAND_MARK = `<svg viewBox="0 0 118 74" xmlns="http://www.w3.org/2000/svg"
 export function renderInvoiceHtml(inv: any, company: Record<string, string>, curLabel: Record<string, string>, invoiceSettings: Record<string, string> = {}): string {
   const customer = inv.project.customer;
   const cur = curLabel[inv.currency] || inv.currency;
-  // فاکتور خرید کالا (TRADING): ستون‌های «برند/مدل» به‌جای «جنس/پوشش»
+  // فاکتور خرید کالا (TRADING): ستون‌های «واحد/رنگ» به‌جای «جنس/پوشش»
   const isTrading = inv.project?.type === 'TRADING';
-  const col2Label = isTrading ? 'برند' : 'جنس';
-  const col3Label = isTrading ? 'مدل' : 'پوشش';
+  const col2Label = isTrading ? 'واحد' : 'جنس';
+  const col3Label = isTrading ? 'رنگ' : 'پوشش';
   const descLabel = isTrading ? 'شرح کالا' : 'شرح قطعه';
 
   const companyName = company.COMPANY_NAME || 'نام شرکت شما';
@@ -102,8 +102,8 @@ export function renderInvoiceHtml(inv: any, company: Record<string, string>, cur
       <tr>
         <td class="row-idx">${fmt(i + 1)}</td>
         <td class="desc">${it.part?.name || '-'}</td>
-        <td>${(isTrading ? it.part?.brand : it.part?.material?.name) || '-'}</td>
-        <td>${(isTrading ? it.part?.partModel : it.part?.coating?.name) || '-'}</td>
+        <td>${(isTrading ? it.part?.unit : it.part?.material?.name) || '-'}</td>
+        <td>${(isTrading ? it.part?.color : it.part?.coating?.name) || '-'}</td>
         <td class="num">${fmt(qty)}</td>
         <td class="num">${fmt(unit)}<span class="cur">${unitLabel}</span></td>
         <td class="num">${fmt(lineTotal)}<span class="cur">${unitLabel}</span></td>
