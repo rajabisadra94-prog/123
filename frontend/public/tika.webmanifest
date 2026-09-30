@@ -1,0 +1,18 @@
+{
+  "name": "پویان طب تیکا — بازار صادرات",
+  "short_name": "تیکا",
+  "description": "کمپین تماس و پیگیری بازار عراق — پویان طب تیکا (Tika Dent Plus)",
+  "start_url": "/market",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "lang": "fa",
+  "dir": "rtl",
+  "background_color": "#ffffff",
+  "theme_color": "#0f5569",
+  "icons": [
+    { "src": "/tika-pwa-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/tika-pwa-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/tika-pwa-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
