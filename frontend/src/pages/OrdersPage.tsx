@@ -145,7 +145,7 @@ export default function OrdersPage() {
           )
         })}
       </div>
-      <p className="hint" style={{ marginTop: 8, marginBottom: 20  }}>💡 کارت‌ها را بین ستون‌ها بکشید (Drag) یا روی هر کارت کلیک کنید.</p>
+      <p className="hint" style={{ marginTop: 8, marginBottom: 20  }}>💡 کارت‌ها را بین ستون‌ها بکشید یا روی هر کارت کلیک کنید. این قابلیت برای سه ردیف ساخت، خرید و بار امانی کار می‌کند.</p>
 
       {/* بخش خرید کالا */}
       <PurchaseSection orders={purchaseOrders} showPackaged={showPackaged} onOpen={(pid: string) => setOpenId(pid)} />
@@ -162,6 +162,22 @@ export default function OrdersPage() {
 
 // ─── بخش «بار امانی» — کانبان ۵ مرحله‌ای فورواردینگ ───
 function ForwardingSection({ cargos, onOpen, onAdd }: any) {
+  const qc = useQueryClient()
+  const [dragId, setDragId] = useState<string | null>(null)
+  const move = useMutation({
+    mutationFn: ({ id, stage }: any) => api.patch(`/forwarding/${id}/stage`, { stage }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['forwarding-cargos'] }); qc.invalidateQueries({ queryKey: ['cargo'] }) },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'خطا'),
+  })
+  async function onDrop(colKey: string) {
+    const id = dragId
+    setDragId(null)
+    const cargo = cargos.find((c: any) => c.id === id)
+    if (!cargo || (cargo.stage || 'AWAITING_CHINA') === colKey) return
+    if (cargo.stage === 'DELIVERED') { toast.error('باری که تحویل مشتری شده قابل جابه‌جایی نیست'); return }
+    if (colKey === 'DELIVERED' && !(await dialog.confirm({ title: 'ثبت تحویل نهایی به مشتری؟', message: `بار پروژهٔ ${cargo.project.code} به مشتری تحویل داده می‌شود و پروژه «تکمیل‌شده» می‌گردد.`, confirmLabel: 'ثبت تحویل' }))) return
+    move.mutate({ id, stage: colKey })
+  }
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '8px 0' }}>
@@ -172,14 +188,16 @@ function ForwardingSection({ cargos, onOpen, onAdd }: any) {
         {CARGO_COLUMNS.map((col) => {
           const cards = cargos.filter((c: any) => (c.stage || 'AWAITING_CHINA') === col.key)
           return (
-            <div key={col.key} className="kanban-column">
+            <div key={col.key} className="kanban-column"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => onDrop(col.key)}>
               <div className="kanban-col-header" style={{ borderTopColor: col.color }}>
                 <span>{col.label}</span>
                 <span className="kanban-count">{cards.length}</span>
               </div>
               <div className="kanban-cards">
                 {cards.map((c: any) => (
-                  <div key={c.id} className="kanban-card" onClick={() => onOpen(c.id)} style={{ borderRight: `3px solid ${col.color}` }}>
+                  <div key={c.id} className="kanban-card" draggable onDragStart={() => setDragId(c.id)} onClick={() => onOpen(c.id)} style={{ borderRight: `3px solid ${col.color}` }}>
                     <div className="card-code">{c.project.code}</div>
                     <div className="card-project">{c.project.customer.name}</div>
                     <div className="card-producer">📦 {c.weightKg ? `${Number(c.weightKg)} kg` : '—'}{c.route ? ` · ${ROUTE_LABELS[c.route] || c.route}` : ''}</div>
@@ -207,6 +225,26 @@ function OrderRouter({ id, orders, onClose }: any) {
 
 // ─── بخش «خرید کالا» — کانبان ۷ مرحله‌ای ───
 function PurchaseSection({ orders, showPackaged, onOpen }: any) {
+  const qc = useQueryClient()
+  const [dragId, setDragId] = useState<string | null>(null)
+  const move = useMutation({
+    mutationFn: ({ id, stage }: any) => api.patch(`/orders/${id}/purchase-stage`, { stage }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['orders'] }),
+    onError: (e: any) => toast.error(e.response?.data?.message || 'خطا'),
+  })
+  function onDrop(colKey: string) {
+    const id = dragId
+    setDragId(null)
+    const order = orders.find((o: any) => o.id === id)
+    if (!order || (order.purchaseStage || 'ORDERED') === colKey) return
+    // مراحل پرداخت باید با ثبت پرداخت انجام شوند تا حسابداری ثبت شود
+    if (colKey === 'DEPOSIT_PAID' || colKey === 'SETTLED') {
+      toast.error(colKey === 'DEPOSIT_PAID' ? 'برای این مرحله، پرداخت بیعانه را در کارت ثبت کنید' : 'برای این مرحله، پرداخت تسویه را در کارت ثبت کنید')
+      onOpen(order.id)
+      return
+    }
+    move.mutate({ id, stage: colKey })
+  }
   return (
     <>
       <h2 style={{ fontSize: 16, margin: '8px 0', color: 'var(--brand)' }}>🛒 خرید کالا (اتاق وضعیت چین)</h2>
@@ -219,14 +257,16 @@ function PurchaseSection({ orders, showPackaged, onOpen }: any) {
             return true
           })
           return (
-            <div key={col.key} className="kanban-column">
+            <div key={col.key} className="kanban-column"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => onDrop(col.key)}>
               <div className="kanban-col-header" style={{ borderTopColor: col.color }}>
                 <span>{col.label}</span>
                 <span className="kanban-count">{cards.length}</span>
               </div>
               <div className="kanban-cards">
                 {cards.map((order: any) => (
-                  <div key={order.id} className="kanban-card" onClick={() => onOpen(order.id)}
+                  <div key={order.id} className="kanban-card" draggable onDragStart={() => setDragId(order.id)} onClick={() => onOpen(order.id)}
                     style={{ borderRight: `3px solid ${col.color}` }}>
                     <div className="card-code">{order.code}</div>
                     <div className="card-project">پروژه: {order.project.code} — {order.project.customer.name}</div>

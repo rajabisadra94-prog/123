@@ -205,6 +205,15 @@ router.patch('/:id/purchase-stage', async (req: Request, res: Response) => {
     });
   }
 
+  // برگشت از «آمادهٔ حمل» به مرحلهٔ قبل: تا زمانی که در بستهٔ حمل نیست مجاز است و سفارش از فهرست آمادهٔ ارسال خارج می‌شود
+  if (stage && stage !== 'READY' && order.status === 'COMPLETED') {
+    const packaged = await prisma.domesticPackageItem.count({ where: { orderId: order.id } });
+    if (packaged > 0) throw new AppError(400, 'این سفارش در بستهٔ حمل است و به مرحلهٔ قبل برنمی‌گردد');
+    data.status = 'IN_PRODUCTION';
+    data.actualEndDate = null;
+    await prisma.part.updateMany({ where: { projectId: order.projectId, selectedPrice: { supplierId: order.supplierId } }, data: { milestone: 'ORDER_PLACED' } });
+  }
+
   await prisma.productionOrder.update({ where: { id: order.id }, data });
   await prisma.auditLog.create({
     data: { userId: req.user!.id, action: 'UPDATE', entity: 'ProductionOrder', entityId: order.id, projectId: order.projectId, changes: { purchaseStage: stage, inspectionStatus } },
