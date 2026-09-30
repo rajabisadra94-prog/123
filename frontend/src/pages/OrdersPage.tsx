@@ -83,15 +83,17 @@ export default function OrdersPage() {
   }
 
   const activeFilterCount = [search, producerId, showPackaged ? '1' : ''].filter(Boolean).length
+  // رفتن به ردیف مربوط با کلیک روی دکمه‌های بالای صفحه
+  const goTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   return (
     <div className="page" dir="rtl">
       <PageHeader title="سفارش‌ها" subtitle="اتاق وضعیت چین — ساخت، خرید و بار امانی در یک نگاه"
         filter={<FilterToggle open={showFilters} onToggle={() => setShowFilters((s) => !s)} count={activeFilterCount} />}
         chips={<>
-          <span className="band-chip" style={{ cursor: 'default' }}>🏭 ساخت سفارشی <span className="n">{manufCount}</span></span>
-          <span className="band-chip" style={{ cursor: 'default' }}>🛒 خرید کالا <span className="n">{purchaseCount}</span></span>
-          <span className="band-chip" style={{ cursor: 'default' }}>📦 بار امانی <span className="n">{cargos.length}</span></span>
+          <button type="button" className="band-chip" onClick={() => goTo('sec-manuf')}>🏭 ساخت سفارشی <span className="n">{manufCount}</span></button>
+          <button type="button" className="band-chip" onClick={() => goTo('sec-purchase')}>🛒 خرید کالا <span className="n">{purchaseCount}</span></button>
+          <button type="button" className="band-chip" onClick={() => goTo('sec-forwarding')}>📦 بار امانی <span className="n">{cargos.length}</span></button>
         </>} />
 
       {showFilters && <div className="filters-bar">
@@ -105,7 +107,7 @@ export default function OrdersPage() {
       </div>}
 
       {/* بخش ساخت */}
-      <h2 style={{ fontSize: 16, margin: '8px 0', color: 'var(--brand)' }}>🏭 ساخت سفارشی</h2>
+      <h2 id="sec-manuf" style={{ fontSize: 16, margin: '8px 0', color: 'var(--brand)', scrollMarginTop: 80 }}>🏭 ساخت سفارشی</h2>
       <div className="kanban-board">
         {COLUMNS.map((col) => {
           const cards = manufOrders.filter((o: any) => {
@@ -180,7 +182,7 @@ function ForwardingSection({ cargos, onOpen, onAdd }: any) {
   }
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '8px 0' }}>
+      <div id="sec-forwarding" style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '8px 0', scrollMarginTop: 80 }}>
         <h2 style={{ fontSize: 16, color: 'var(--brand)', margin: 0 }}>📦 بار امانی (فورواردینگ)</h2>
         <button className="btn-primary btn-sm" onClick={onAdd}>+ ثبت بار جدید</button>
       </div>
@@ -247,7 +249,7 @@ function PurchaseSection({ orders, showPackaged, onOpen }: any) {
   }
   return (
     <>
-      <h2 style={{ fontSize: 16, margin: '8px 0', color: 'var(--brand)' }}>🛒 خرید کالا (اتاق وضعیت چین)</h2>
+      <h2 id="sec-purchase" style={{ fontSize: 16, margin: '8px 0', color: 'var(--brand)', scrollMarginTop: 80 }}>🛒 خرید کالا (اتاق وضعیت چین)</h2>
       <div className="kanban-board">
         {PURCHASE_COLUMNS.map((col) => {
           const cards = orders.filter((o: any) => {
