@@ -26,7 +26,7 @@ echo منتظر آماده شدن دیتابیس (بار اول ریختن دی�
 node backend\scripts\wait-db.js || (pause & exit /b 1)
 
 pushd backend
-call npx prisma db execute --file prisma\migrations\20260929000000_forwarding_process\migration.sql --schema prisma\schema.prisma
+node scripts\apply-local-migrations.js
 node scripts\local-reset-admin.js
 popd
 
