@@ -32,7 +32,7 @@ export default function DashboardPage() {
   const [producerId, setProducerId] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['dashboard', customerId, producerId, typeFilter],
     queryFn: () => api.get('/dashboard', { params: { customerId: customerId || undefined, producerId: producerId || undefined, type: typeFilter || undefined } }).then((r) => r.data),
   })
@@ -42,6 +42,23 @@ export default function DashboardPage() {
   })
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/settings/customers').then((r) => r.data) })
   const { data: producers = [] } = useQuery({ queryKey: ['producers'], queryFn: () => api.get('/settings/producers').then((r) => r.data) })
+
+  // اگر دریافت داشبورد خطا بدهد، علت را نشان بده (به‌جای کادرهای خاکستری همیشگی)
+  if (isError) {
+    const err: any = error
+    const status = err?.response?.status ? `[${err.response.status}] ` : ''
+    const detail = err?.response?.data?.message || err?.message || 'خطای ناشناخته'
+    return (
+      <div className="page" dir="rtl">
+        <div className="error-msg" style={{ padding: 16 }}>
+          <strong>داشبورد بارگذاری نشد.</strong>
+          <div style={{ marginTop: 6, fontSize: 13 }}>{status}{detail}</div>
+          <div className="hint-sm" style={{ marginTop: 6 }}>اگر این پیام تکرار شد، متن بالا و آخرین خطای پنجرهٔ بک‌اند را بفرستید.</div>
+          <button className="btn-primary btn-sm" style={{ marginTop: 10 }} onClick={() => refetch()}>تلاش دوباره</button>
+        </div>
+      </div>
+    )
+  }
 
   if (isLoading || !data) {
     return (
